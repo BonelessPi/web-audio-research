@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Audio test (JS WAA)</title>
+</head>
+<body>
+  <h1>Audio test (JS WAA)</h1>
+  
+  <audio id="player" controls crossorigin="anonymous">
+    <source src="femalecountdown.wav" type="audio/wav">
+    Your browser does not support the audio tag.
+  </audio>
+
+  <script>
+    async function main() {
+      // Create AudioContext
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+      // Grab audio element
+      const audioElement = document.getElementById("player");
+
+      // Turn it into a media source
+      const track = audioContext.createMediaElementSource(audioElement);
+
+      // Load the worklet module
+      await audioContext.audioWorklet.addModule('processor.js');
+
+      // Create an instance of your custom processor
+      const workletNode = new AudioWorkletNode(audioContext, 'my-processor');
+
+      // Connect graph: <audio> → worklet → speakers
+      track.connect(workletNode).connect(audioContext.destination);
+      
+      audioElement.addEventListener("play", async () => {
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+          console.log("AudioContext resumed");
+        }
+      });
+    }
+
+    main();
+  </script>
+</body>
+</html>
+

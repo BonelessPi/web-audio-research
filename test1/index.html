@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Emscripten Starter</title>
+</head>
+<body>
+  <h1>Emscripten Project Starter</h1>
+  <p>Enter numbers below:</p>
+  <textarea id="txtArea" rows="3" cols="40"></textarea>
+  <button id="runBtn">Calc mean</button>
+  <h5 id="resultTxt"></h5>
+
+  <script type="module">
+    import createModule from './build/mylib.js';
+
+    const Module = await createModule();
+
+    document.getElementById("runBtn").addEventListener("click", () => {
+      const numbers = document.getElementById("txtArea").value.match(/\d*\.?\d+/g).map(Number);
+      console.log(numbers);
+      const mean = Module.mean(numbers);
+      console.log(mean);
+      document.getElementById("resultTxt").innerText = "The mean is " + mean;
+    });
+  </script>
+</body>
+</html>
+
