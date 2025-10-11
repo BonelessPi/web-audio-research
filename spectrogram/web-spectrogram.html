@@ -69,7 +69,6 @@
     // and shift the canvas left by 1 pixel so the spectrogram scrolls.
 
     const wasmModule = await WebAssembly.compileStreaming(fetch('./build/stftinternal.wasm'));
-    console.log(wasmModule);
 
     const canvas = document.getElementById('spectrogram');
     const ctx = canvas.getContext('2d');
@@ -267,6 +266,7 @@
     // Connect a MediaStream (mic) or MediaElement (file) to the analyser and start
     async function connectSource(node){
       await ensureAudioContext();
+      await audioCtx.suspend()
       if(sourceNode) try{ sourceNode.disconnect(); }catch(e){}
       
       sourceNode = node;
@@ -301,7 +301,6 @@
     fileEl.addEventListener('change', async (ev)=>{
       const f = ev.target.files && ev.target.files[0];
       if(!f) return;
-      if(audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
       const url = URL.createObjectURL(f);
       const audio = new Audio();
       audio.src = url;
@@ -310,6 +309,7 @@
       await audio.play().catch(()=>{});
       const src = audioCtx.createMediaElementSource(audio);
       await connectSource(src);
+      await audioCtx.resume();
       setStatus('playing file: ' + f.name);
     });
 
@@ -321,6 +321,7 @@
         await ensureAudioContext();
         const src = audioCtx.createMediaStreamSource(micStream);
         await connectSource(src);
+        await audioCtx.resume();
         setStatus('microphone active');
       }catch(err){
         console.error(err);
@@ -342,6 +343,7 @@
       stopVisualizing();
       try{ if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream = null; } }catch(e){}
       if(sourceNode && sourceNode.mediaElement) { try{ sourceNode.mediaElement.pause(); }catch(e){} }
+      audioCtx.suspend();
       setStatus('stopped');
     });
 

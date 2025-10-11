@@ -1,21 +1,17 @@
 # Project settings
 SRC_DIR = src
 BUILD_DIR = build
-TARGET = mystftnodelib
+TARGET = stftinternal
 
 # Compiler
 EMCC = emcc
 
-# Find all source files automatically
-SOURCES = $(wildcard $(SRC_DIR)/*.cpp)
-
 # Common flags
 CXXFLAGS = \
-	-lembind \
-	-sMODULARIZE \
-	-sEXPORT_ES6=1 \
+	-sSTANDALONE_WASM=1 \
 	-sENVIRONMENT=web \
 	-sALLOW_MEMORY_GROWTH \
+	-sEXPORTED_FUNCTIONS="['_stft_internal_create','_stft_internal_destroy','_stft_internal_process','_stft_internal_next_input_quantum_ptr','_stft_internal_next_output_quantum_ptr']" \
 	--no-entry
 
 # Debug / Release flags
@@ -27,18 +23,17 @@ all: release
 
 # Release build
 release: CXXFLAGS += $(RELEASE_FLAGS)
-release: $(BUILD_DIR)/$(TARGET).js
+release: $(BUILD_DIR)/$(TARGET).wasm
 
 # Debug build
 debug: CXXFLAGS += $(DEBUG_FLAGS)
-debug: $(BUILD_DIR)/$(TARGET).js
+debug: $(BUILD_DIR)/$(TARGET).wasm
 
-# Pattern rule for building the target
-$(BUILD_DIR)/$(TARGET).js: $(SOURCES)
+# Build stftinternal
+$(BUILD_DIR)/$(TARGET).wasm: $(SRC_DIR)/$(TARGET).cpp
 	@mkdir -p $(BUILD_DIR)
-	$(EMCC) $(SOURCES) -o $@ $(CXXFLAGS)
+	$(EMCC) $< -o $@ $(CXXFLAGS)
 
 # Clean build artifacts
 clean:
 	rm -f $(BUILD_DIR)/*
-
