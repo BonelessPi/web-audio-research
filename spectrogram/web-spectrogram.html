@@ -271,6 +271,9 @@
       
       sourceNode = node;
 
+      if(stftNode){
+        stft.destroyInternal();
+      }
       stftNode = await createStftNode();
 
       gainNode = audioCtx.createGain();
@@ -285,14 +288,13 @@
       delayNode = audioCtx.createDelay();
       delayNode.delayTime.value = delayTime;
 
-      // Routing: source → gain → [analyser + delay→analyserDelayed] → destination
-      sourceNode.connect(stftNode);
-      stftNode.connect(gainNode);
+      // Routing: source → gain → [stft + none] → destination
+      sourceNode.connect(gainNode);
       gainNode.connect(analyser);
-      gainNode.connect(delayNode);
-      delayNode.connect(analyserDelayed);
-
-      gainNode.connect(audioCtx.destination);
+      gainNode.connect(stftNode);
+      stftNode.connect(analyserDelayed);
+      //gainNode.connect(audioCtx.destination);
+      stftNode.connect(audioCtx.destination);
 
       await startVisualizing();
     }
@@ -341,8 +343,17 @@
 
     stopBtn.addEventListener('click', ()=>{
       stopVisualizing();
-      try{ if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream = null; } }catch(e){}
-      if(sourceNode && sourceNode.mediaElement) { try{ sourceNode.mediaElement.pause(); }catch(e){} }
+      try{
+        if(micStream){
+          micStream.getTracks().forEach(t=>t.stop());
+          micStream = null;
+        }
+      }catch(e){}
+      if(sourceNode && sourceNode.mediaElement){
+        try{
+          sourceNode.mediaElement.pause();
+        }catch(e){}
+      }
       audioCtx.suspend();
       setStatus('stopped');
     });

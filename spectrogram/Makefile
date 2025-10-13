@@ -15,7 +15,7 @@ CXXFLAGS = \
 	--no-entry
 
 # Debug / Release flags
-DEBUG_FLAGS = -O0 -gsource-map
+DEBUG_FLAGS = -O0 -gsource-map -sASSERTIONS=2 -Wall --check -sSAFE_HEAP=1 -sSAVE_HEAP_LOG=1 -sSTRICT
 RELEASE_FLAGS = -O3
 
 # Default target = release build
@@ -29,10 +29,17 @@ release: $(BUILD_DIR)/$(TARGET).wasm
 debug: CXXFLAGS += $(DEBUG_FLAGS)
 debug: $(BUILD_DIR)/$(TARGET).wasm
 
+test: test/test_all.c
+	gcc test/test_all.c ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -lm -o testing_out -Wall -fsanitize=address -static-libasan -g
+	./testing_out
+	echo
+	gcc test/test_all.c ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -lm -o testing_out -Wall
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./testing_out
+
 # Build stftinternal
-$(BUILD_DIR)/$(TARGET).wasm: $(SRC_DIR)/$(TARGET).cpp
+$(BUILD_DIR)/$(TARGET).wasm: $(SRC_DIR)/$(TARGET).c
 	@mkdir -p $(BUILD_DIR)
-	$(EMCC) $< -o $@ $(CXXFLAGS)
+	$(EMCC) $< ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -o $@ $(CXXFLAGS)
 
 # Clean build artifacts
 clean:
