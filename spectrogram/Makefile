@@ -15,7 +15,7 @@ CXXFLAGS = \
 	--no-entry
 
 # Debug / Release flags
-DEBUG_FLAGS = -O0 -gsource-map -sASSERTIONS=2 -Wall --check -sSAFE_HEAP=1 -sSAVE_HEAP_LOG=1 -sSTRICT
+DEBUG_FLAGS = -O0 -gsource-map -sASSERTIONS=1 -Wall -sSAFE_HEAP=1 -sSAFE_HEAP_LOG=1 -sSTRICT
 RELEASE_FLAGS = -O3
 
 # Default target = release build

@@ -3,50 +3,69 @@
 
 // TODO: assert Q|H|W (divides)
 #define QUANTUM_SIZE 128
-#define HOP_SIZE (QUANTUM_SIZE*4)
-#define WINDOW_SIZE (QUANTUM_SIZE*8)
 
 // Struct for internal operations of the custom AudioWorklet
 struct StftInternal {
-    float inputBuffer[WINDOW_SIZE];
-    float outputBuffer[WINDOW_SIZE];
-    float timeData[WINDOW_SIZE];
-    kiss_fft_cpx freqData[WINDOW_SIZE / 2 + 1];
-    float HANN[WINDOW_SIZE];
+    int windowSize;
+    int hopSize;
+    int index;
+
+    void *rawData;
+    float *HANN;
+    float *inputBuffer;
+    float *outputBuffer;
+    float *timeData;
+    kiss_fft_cpx *freqData;
     kiss_fftr_cfg forward_cfg;
     kiss_fftr_cfg inverse_cfg;
-    int index;
 };
 
-// TODO make fft_size a parameter
+
 // Dynamically alloc an internal struct
-struct StftInternal* stft_internal_create(void) {
+struct StftInternal* stft_internal_create(int windowSize, int hopSize) {
     // Malloc struct
     struct StftInternal *p = (struct StftInternal*)malloc(sizeof(struct StftInternal));
     if (!p){
         return NULL;
     }
-    // Set data in struct (especially the arrays)
-    memset(p, 0, sizeof(*p));
 
-    // Alloc kiss fftr cfg
-    p->forward_cfg = kiss_fftr_alloc(WINDOW_SIZE, 0, NULL, NULL);
-    p->inverse_cfg = kiss_fftr_alloc(WINDOW_SIZE, 1, NULL, NULL);
+    // Set simple data in struct
+    p->windowSize = windowSize;
+    p->hopSize = hopSize;
+    p->index = 0;
+    
+    // Calculate size to malloc
+    size_t bytes_needed = (4*windowSize*sizeof(float) + (windowSize/2 + 1)*sizeof(kiss_fft_cpx)), forward_cfg_size = 0, inverse_cfg_size = 0;
+    kiss_fftr_alloc(windowSize, 0, NULL, &forward_cfg_size);
+    kiss_fftr_alloc(windowSize, 1, NULL, &inverse_cfg_size);
+    bytes_needed += forward_cfg_size + inverse_cfg_size;
 
-    if (!p->forward_cfg || !p->inverse_cfg) {
-        free(p->forward_cfg);
-        free(p->inverse_cfg);
+    // Malloc the data for the arrays and cfgs
+    p->rawData = malloc(bytes_needed);
+    if (!p->rawData) {
         free(p);
         return NULL;
     }
 
-    // Precompute Hann window
-    for (int i = 0; i < WINDOW_SIZE; ++i){
-        p->HANN[i] = 0.5 * (1.0 - cos((2.0 * M_PI * i) / WINDOW_SIZE));
-    }
+    // Set the internal pointers of subsections
+    p->HANN = (float*)(p->rawData);
+    p->inputBuffer = p->HANN + windowSize;
+    p->outputBuffer = p->inputBuffer + windowSize;
+    p->timeData = p->outputBuffer + windowSize;
+    p->freqData = (kiss_fft_cpx*)(p->timeData + windowSize);
+    char *cfg_base = (char*)(p->freqData + windowSize/2 + 1);
+    p->forward_cfg = (kiss_fftr_cfg)cfg_base;
+    p->inverse_cfg = (kiss_fftr_cfg)(cfg_base + forward_cfg_size);
 
-    // Index for input and output buffers
-    p->index = 0;
+    // Precompute Hann window
+    for (int i = 0; i < windowSize; ++i){
+        p->HANN[i] = 0.5 * (1.0 - cos((2.0 * M_PI * i) / windowSize));
+    }
+    memset(p->inputBuffer, 0, 2*windowSize*sizeof(float));
+    // outputBuffer is also set in prior line
+    // We can leave timeData and freqData uninited
+    kiss_fftr_alloc(windowSize, 0, p->forward_cfg, &forward_cfg_size);
+    kiss_fftr_alloc(windowSize, 1, p->inverse_cfg, &inverse_cfg_size);
 
     return p;
 }
@@ -54,12 +73,10 @@ struct StftInternal* stft_internal_create(void) {
 // Free internal struct
 void stft_internal_destroy(struct StftInternal *p){
     if (!p) return;
-    free(p->forward_cfg);
-    free(p->inverse_cfg);
+    free(p->rawData);
     free(p);
 }
 
-// TODO assert in bounds?
 float* stft_internal_next_input_quantum_ptr(struct StftInternal *p){
     return p->inputBuffer + p->index;
 }
@@ -70,23 +87,25 @@ float* stft_internal_next_output_quantum_ptr(struct StftInternal *p){
 
 void stft_internal_process(struct StftInternal *p) {
     // JS should have done the copy in and out of the buffer views. Advance index
-    p->index = (p->index + QUANTUM_SIZE) % WINDOW_SIZE;
+    const int windowSize = p->windowSize;
+    const int hopSize = p->hopSize;
+    p->index = (p->index + QUANTUM_SIZE) % windowSize;
 
     // SOLA: Update outputBuffer (clear new part and append to current area)
-    if(p->index % HOP_SIZE == 0){
-        for (int i = 0; i < WINDOW_SIZE; ++i){
-            p->timeData[i] = p->HANN[i] * p->inputBuffer[(p->index+i)%WINDOW_SIZE];
+    if(p->index % hopSize == 0){
+        for (int i = 0; i < windowSize; ++i){
+            p->timeData[i] = p->HANN[i] * p->inputBuffer[(p->index + i) % windowSize];
         }
 
         kiss_fftr(p->forward_cfg, p->timeData, p->freqData);
         // TODO filter
         kiss_fftri(p->inverse_cfg, p->freqData, p->timeData);
 
-        for (int i = 0; i < HOP_SIZE; ++i){
-            p->outputBuffer[(p->index+WINDOW_SIZE-HOP_SIZE+i)%WINDOW_SIZE] = 0.0f;
+        for (int i = 0; i < hopSize; ++i){
+            p->outputBuffer[(p->index + windowSize - hopSize + i) % windowSize] = 0.0f;
         }
-        for (int i = 0; i < WINDOW_SIZE; ++i){
-            p->outputBuffer[(p->index+i)%WINDOW_SIZE] += (2.0f/(WINDOW_SIZE/HOP_SIZE)) * p->timeData[i] / WINDOW_SIZE;
+        for (int i = 0; i < windowSize; ++i){
+            p->outputBuffer[(p->index + i) % windowSize] += (2.0f/(windowSize/hopSize)) * p->timeData[i] / windowSize;
         }
     }
 }

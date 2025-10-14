@@ -7,10 +7,12 @@
 
 #define EPS 1e-6f
 #define TEST_SIGNAL_LENGTH (WINDOW_SIZE * 4)
-
+// TODO remove
+#define WINDOW_SIZE 1024
+#define HOP_SIZE 512
 
 static void test_hann_cola(void) {
-    struct StftInternal *p = stft_internal_create();
+    struct StftInternal *p = stft_internal_create(WINDOW_SIZE,HOP_SIZE);
 
     // Accumulate overlapped windows
     double sum[WINDOW_SIZE] = {0};
@@ -88,7 +90,7 @@ static void dump_arrays_to_csv(const char *filename, const float *input, const f
 }
 
 static void test_stft_reconstruction(void) {
-    struct StftInternal* stft = stft_internal_create();
+    struct StftInternal* stft = stft_internal_create(WINDOW_SIZE,HOP_SIZE);
     if (!stft) {
         printf("❌ STFT allocation failed.\n");
         return;

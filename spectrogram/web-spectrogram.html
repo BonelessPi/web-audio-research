@@ -128,8 +128,9 @@
 
     async function createStftNode() {
       await ensureAudioContext();
+      const windowSize = parseInt(fftSelect.value, 10);
       return new AudioWorkletNode(audioCtx, "my-stft-processor", {
-        processorOptions: { wasmModule }
+        processorOptions: { wasmModule, windowSize, hopSize: windowSize/2 }
       });
     }
 
@@ -272,19 +273,33 @@
       sourceNode = node;
 
       if(stftNode){
-        stft.destroyInternal();
+        stftNode.port.postMessage({type:"shutdown"});
+        stftNode.port.close?.()
+        stftNode.disconnect();
       }
       stftNode = await createStftNode();
 
+      if(gainNode){
+        gainNode.disconnect();
+      }
       gainNode = audioCtx.createGain();
       gainNode.gain.value = parseFloat(gainEl.value);
 
+      if(analyser){
+        analyser.disconnect();
+      }
       analyser = await createAnalyser();
+      if(analyserDelayed){
+        analyserDelayed.disconnect();
+      }
       analyserDelayed = await createAnalyser();
 
       // delay time = half FFT window length in seconds
       const fftSize = parseInt(fftSelect.value,10);
       const delayTime = (fftSize/2) / audioCtx.sampleRate;
+      if(delayNode){
+        delayNode.disconnect();
+      }
       delayNode = audioCtx.createDelay();
       delayNode.delayTime.value = delayTime;
 
@@ -359,13 +374,22 @@
     });
 
     // Update analyser when controls change
-    fftSelect.addEventListener('change', ()=>{
+    fftSelect.addEventListener('change', async ()=>{
       const fftSize = parseInt(fftSelect.value, 10);
       if(analyser){ analyser.fftSize = fftSize; }
       if(analyserDelayed){ analyserDelayed.fftSize = fftSize; }
       if(delayNode){
         const delayTime = (fftSize/2) / audioCtx.sampleRate;
         delayNode.delayTime.value = delayTime;
+      }
+      if(stftNode){
+        stftNode.port.postMessage({type:"shutdown"});
+        stftNode.port.close?.()
+        stftNode.disconnect();
+        stftNode = await createStftNode();
+        gainNode.connect(stftNode);
+        stftNode.connect(analyserDelayed);
+        stftNode.connect(audioCtx.destination);
       }
     });
     smoothingEl.addEventListener('input', ()=>{
