@@ -30,11 +30,11 @@ debug: CXXFLAGS += $(DEBUG_FLAGS)
 debug: $(BUILD_DIR)/$(TARGET).wasm
 
 test: test/test_all.c
-	gcc test/test_all.c ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -lm -o testing_out -Wall -fsanitize=address -static-libasan -g
-	./testing_out
+	gcc test/test_all.c ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -lm -o build/testing_out -Wall -fsanitize=address -static-libasan -g
+	./build/testing_out
 	echo
-	gcc test/test_all.c ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -lm -o testing_out -Wall
-	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./testing_out
+	gcc test/test_all.c ../kissfft/kiss_fftr.c ../kissfft/kiss_fft.c -lm -o build/testing_out -Wall
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./build/testing_out
 
 # Build stftinternal
 $(BUILD_DIR)/$(TARGET).wasm: $(SRC_DIR)/$(TARGET).c

@@ -138,7 +138,7 @@ static void test_stft_reconstruction(void) {
     }
 
     // Dump the full arrays for external inspection
-    dump_arrays_to_csv("stft_debug.csv", input, output, TEST_SIGNAL_LENGTH + WINDOW_SIZE);
+    dump_arrays_to_csv("build/stft_debug.csv", input, output, TEST_SIGNAL_LENGTH + WINDOW_SIZE);
 
 
     // --- Compare only the valid portion ---
