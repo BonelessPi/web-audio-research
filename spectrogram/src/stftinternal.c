@@ -1,7 +1,6 @@
 #include "../../kissfft/kiss_fftr.h"
 #include <math.h>
 
-// TODO: assert Q|H|W (divides)
 #define QUANTUM_SIZE 128
 
 // Struct for internal operations of the custom AudioWorklet
@@ -23,6 +22,20 @@ struct StftInternal {
 
 // Dynamically alloc an internal struct
 struct StftInternal* stft_internal_create(int windowSize, int hopSize) {
+    // Check that windowSize and hopSize are multiples of QUANTUM_SIZE and windowSize is multiple of hopSize
+    // Check that windowSize and hopSize are powers of 2
+    // Check that windowSize and hopSize are greater than or equal to QUANTUM_SIZE and windowSize is greater than or equal to hopSize
+    if (windowSize%QUANTUM_SIZE != 0 ||
+        hopSize%QUANTUM_SIZE != 0 ||
+        windowSize%hopSize != 0 ||
+        (windowSize&-windowSize) != windowSize ||
+        (hopSize&-hopSize) != hopSize ||
+        windowSize < QUANTUM_SIZE ||
+        hopSize < QUANTUM_SIZE ||
+        windowSize < hopSize){
+        return NULL;
+    }
+    
     // Malloc struct
     struct StftInternal *p = (struct StftInternal*)malloc(sizeof(struct StftInternal));
     if (!p){
@@ -98,7 +111,10 @@ void stft_internal_process(struct StftInternal *p) {
         }
 
         kiss_fftr(p->forward_cfg, p->timeData, p->freqData);
-        // TODO filter
+        for (int i = 0; i < windowSize/2+1; ++i){
+            p->freqData[i].r *= i<windowSize/8;
+            p->freqData[i].i *= i<windowSize/8;
+        }
         kiss_fftri(p->inverse_cfg, p->freqData, p->timeData);
 
         for (int i = 0; i < hopSize; ++i){

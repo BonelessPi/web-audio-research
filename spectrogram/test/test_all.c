@@ -59,8 +59,9 @@ static void test_fft_magnitude(void) {
     kiss_fftri(inv, freq, timeOut);
 
     // Normalize by WINDOW_SIZE (the same as your stft_internal_process)
-    for (int i = 0; i < WINDOW_SIZE; ++i)
+    for (int i = 0; i < WINDOW_SIZE; ++i){
         timeOut[i] /= WINDOW_SIZE;
+    }
 
     // Check equivalence
     for (int i = 0; i < WINDOW_SIZE; ++i) {
@@ -114,6 +115,8 @@ static void test_stft_reconstruction(void) {
         float* inPtr = stft_internal_next_input_quantum_ptr(stft);
         memcpy(inPtr, input+pos, sizeof(float) * QUANTUM_SIZE);
 
+        // TODO move copy out here
+
         stft_internal_process(stft);
 
         float* outPtr = stft_internal_next_output_quantum_ptr(stft);
@@ -161,6 +164,6 @@ int main(void) {
     test_hann_cola();
     test_fft_magnitude();
     test_stft_reconstruction();
-    printf("All tests passed.\n");
+    printf("All tests finished.\n");
     return 0;
 }
