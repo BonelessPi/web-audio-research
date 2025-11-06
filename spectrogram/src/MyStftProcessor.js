@@ -1,6 +1,15 @@
 // TODO improve naming of Make target, module name, filenames, classnames, etc
+// TODO remove console.log s
 // TODO make node class to simplify clean up and allow changing of window size and hop size??
 class MyStftProcessor extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+        return [
+            { name: 'oscCutoffPeriod', defaultValue: 3, minValue: .01, automationRate: 'k-rate' },
+            { name: 'oscCutoffLowFreq', defaultValue: 200, minValue: 0, automationRate: 'k-rate' },
+            { name: 'oscCutoffHighFreq', defaultValue: 2000, minValue: 0, automationRate: 'k-rate' },
+        ];
+    }
+
     constructor(options) {
         super();
 
@@ -10,6 +19,11 @@ class MyStftProcessor extends AudioWorkletProcessor {
         console.log({windowSize, hopSize});
         this.ready = false;
         this.shouldStop = false;
+
+        // Oscillating cutoff vars
+        this.sampleRate = sampleRate;
+        this.frames = 0;
+        this.windowSize = windowSize;
 
         this.port.onmessage = (e) => {
             console.log("message recv", e);
@@ -74,7 +88,17 @@ class MyStftProcessor extends AudioWorkletProcessor {
         new Float32Array(this.memory.buffer,this.exports.stft_internal_next_input_quantum_ptr(this.internalNodePtr),128).set(input);
         output.set(new Float32Array(this.memory.buffer,this.exports.stft_internal_next_output_quantum_ptr(this.internalNodePtr),128));
 
-        this.exports.stft_internal_process(this.internalNodePtr);
+        const oscCutoffPeriod = parameters.oscCutoffPeriod[0];
+        const oscCutoffLowFreq = parameters.oscCutoffLowFreq[0];
+        const oscCutoffHighFreq = parameters.oscCutoffHighFreq[0];
+        const oscCutoffFreqAvg = (oscCutoffLowFreq+oscCutoffHighFreq)/2;
+        const oscCutoffFreqRange = oscCutoffHighFreq-oscCutoffLowFreq;
+        const cutoffHz = oscCutoffFreqAvg + oscCutoffFreqRange/2 * Math.sin(2*Math.PI * this.frames/this.sampleRate / oscCutoffPeriod);
+        this.frames += 128;
+        const cutoffBin = cutoffHz/this.sampleRate * this.windowSize;
+        // console.log(cutoffHz, cutoffBin);
+
+        this.exports.stft_internal_process(this.internalNodePtr, cutoffBin);
 
         return true;
     }

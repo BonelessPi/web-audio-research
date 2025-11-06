@@ -60,6 +60,24 @@
       <div class="grow small" id="status">Status: idle</div>
     </div>
 
+    <div class="row">
+      <div>
+        <label>Period</label>
+        <input id="periodSlider" type="range" min="0.1" max="30" step=".1" value="3">
+        <span id="periodVal" class="small">3 sec</span>
+      </div>
+      <div>
+        <label>Low Freq</label>
+        <input id="lowSlider" type="range" min="0" max="5000" step="1" value="200">
+        <span id="lowVal" class="small">200 Hz</span>
+      </div>
+      <div>
+        <label>High Freq</label>
+        <input id="highSlider" type="range" min="0" max="5000" step="1" value="2000">
+        <span id="highVal" class="small">2000 Hz</span>
+      </div>
+    </div>
+
     <footer>Tip: Drop an audio file or click "Use Microphone". The spectrogram scrolls left-to-right (new data on the right).</footer>
   </div>
 

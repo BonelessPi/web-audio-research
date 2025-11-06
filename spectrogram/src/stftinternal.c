@@ -98,7 +98,7 @@ float* stft_internal_next_output_quantum_ptr(struct StftInternal *p){
     return p->outputBuffer + p->index;
 }
 
-void stft_internal_process(struct StftInternal *p) {
+void stft_internal_process(struct StftInternal *p, int binCutoff) {
     // JS should have done the copy in and out of the buffer views. Advance index
     const int windowSize = p->windowSize;
     const int hopSize = p->hopSize;
@@ -111,9 +111,9 @@ void stft_internal_process(struct StftInternal *p) {
         }
 
         kiss_fftr(p->forward_cfg, p->timeData, p->freqData);
-        for (int i = 0; i < windowSize/2+1; ++i){
-            p->freqData[i].r *= i<windowSize/8;
-            p->freqData[i].i *= i<windowSize/8;
+        for (int i = binCutoff; i < windowSize/2+1; ++i){
+            p->freqData[i].r = 0;
+            p->freqData[i].i = 0;
         }
         kiss_fftri(p->inverse_cfg, p->freqData, p->timeData);
 
