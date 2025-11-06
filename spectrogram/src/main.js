@@ -2,7 +2,7 @@
 // Behavior: each animation frame we draw a new vertical column representing the current frequency magnitude
 // and shift the canvas left by 1 pixel so the spectrogram scrolls.
 
-const wasmModule = await WebAssembly.compileStreaming(fetch('./build/stftinternal.wasm'));
+const wasmModule = await WebAssembly.compileStreaming(fetch('../build/stftinternal.wasm'));
 
 const canvas = document.getElementById('spectrogram');
 const ctx = canvas.getContext('2d');
@@ -26,7 +26,6 @@ let stftNode = null;
 let analyser = null;
 let analyserDelayed = null;
 let gainNode = null;
-let delayNode = null;
 let micStream = null;
 let rafId = null;
 
@@ -46,7 +45,7 @@ function setStatus(s) { statusEl.textContent = 'Status: ' + s }
 async function ensureAudioContext() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        await audioCtx.audioWorklet.addModule('MyStftProcessor.js');
+        await audioCtx.audioWorklet.addModule('src/MyStftProcessor.js');
     }
 }
 
@@ -228,15 +227,6 @@ async function connectSource(node) {
     }
     analyserDelayed = await createAnalyser();
 
-    // delay time = half FFT window length in seconds
-    const fftSize = parseInt(fftSelect.value, 10);
-    const delayTime = (fftSize / 2) / audioCtx.sampleRate;
-    if (delayNode) {
-        delayNode.disconnect();
-    }
-    delayNode = audioCtx.createDelay();
-    delayNode.delayTime.value = delayTime;
-
     // Routing: source → gain → [stft + none] → destination
     sourceNode.connect(gainNode);
     gainNode.connect(analyser);
@@ -312,10 +302,6 @@ fftSelect.addEventListener('change', async () => {
     const fftSize = parseInt(fftSelect.value, 10);
     if (analyser) { analyser.fftSize = fftSize; }
     if (analyserDelayed) { analyserDelayed.fftSize = fftSize; }
-    if (delayNode) {
-        const delayTime = (fftSize / 2) / audioCtx.sampleRate;
-        delayNode.delayTime.value = delayTime;
-    }
     if (stftNode) {
         stftNode.port.postMessage({ type: "shutdown" });
         stftNode.port.close?.()
