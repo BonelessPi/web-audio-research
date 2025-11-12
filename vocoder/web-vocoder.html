@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Web Vocoder (Canvas + Web Audio API)</title>
+  <style>
+    :root{--bg:#0b0f14;--panel:#0f1720;--accent:#2dd4bf;color-scheme:dark}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial}
+    body{background:linear-gradient(180deg,#071018,#071018 60%);display:flex;align-items:center;justify-content:center;padding:18px}
+    .app{width:100%;max-width:1100px;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border-radius:12px;padding:14px;box-shadow:0 6px 30px rgba(2,6,23,0.6)}
+    header{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+    h1{font-size:18px;margin:0;color:#e6eef6}
+    .controls{display:flex;gap:8px;align-items:center;margin-left:auto}
+    button,input,select{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#dbeafe;padding:8px 10px;border-radius:8px}
+    canvas{width:100%;height:360px;background:black;border-radius:8px;display:block}
+    label{color:#9fb0c8;font-size:13px}
+    .row{display:flex;gap:12px;align-items:center;margin-top:10px}
+    .grow{flex:1}
+    .small{font-size:13px;color:#9fb0c8}
+    footer{margin-top:8px;color:#7f98b0;font-size:12px}
+    option{background-color:#0f1720;color:#e6eef6;}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Web Vocoder — HTML Canvas + Web Audio API</h1>
+      <div class="controls">
+        <button id="micBtn">Use Microphone</button>
+        <input id="voiceFileInput" type="file" accept="audio/*" />
+        <input id="instrFileInput" type="file" accept="audio/*" />
+        <button id="startBtn">Start</button>
+        <button id="stopBtn">Stop</button>
+      </div>
+    </header>
+
+    <canvas id="spectrogram"></canvas>
+
+    <div class="row">
+      <div style="width:220px">
+        <label>FFT size</label>
+        <select id="fftSize">
+          <option value="1024">1024</option>
+          <option value="2048" selected>2048</option>
+          <option value="4096">4096</option>
+          <option value="8192">8192</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Smoothing</label>
+        <input id="smoothing" type="range" min="0" max="0.99" step="0.01" value="0.8" />
+      </div>
+
+      <div>
+        <label>Gain</label>
+        <input id="gain" type="range" min="0" max="4" step="0.01" value="1" />
+      </div>
+
+      <div class="grow small" id="status">Status: idle</div>
+    </div>
+
+    <footer>Tip: Drop an audio file or click "Use Microphone". The spectrogram scrolls left-to-right (new data on the right).</footer>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
+
