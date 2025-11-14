@@ -134,6 +134,8 @@ void vocoder_internal_process(struct VocoderInternal *p) {
         }
         kiss_fftr(p->forward_cfg, p->timeData, p->instrFreqData);
         
+        // TODO sub-band
+
         for (int i = 0; i < windowSize/2+1; ++i){
             float amp = sqrtf(p->voiceFreqData[i].r*p->voiceFreqData[i].r + p->voiceFreqData[i].i*p->voiceFreqData[i].i);
             p->instrFreqData[i].r *= amp;

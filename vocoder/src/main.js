@@ -203,9 +203,7 @@ async function recreateAudioGraph() {
     // Disconnect the source nodes (create silent ones if they don't exist)
     if (voiceNode) {
         try { voiceNode.disconnect(); } catch (e) {}
-        if (voiceNode.mediaElement) {
-            await voiceNode.mediaElement.play().catch(() => {});
-        } else if (micStream) {
+        if (micStream) {
             micStream.getTracks().forEach(t => t.enabled = true);
             console.log(micStream, micStream.getTracks());
         }
@@ -217,7 +215,6 @@ async function recreateAudioGraph() {
 
     if (instrNode) {
         try { instrNode.disconnect(); } catch (e) {}
-        await instrNode.mediaElement.play().catch(() => {});
     } else {
         instrNode = audioCtx.createBufferSource();
         instrNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
@@ -286,10 +283,17 @@ voiceFileInput.addEventListener('change', async (ev) => {
     if (!f) return;
     const url = URL.createObjectURL(f);
     const audio = new Audio();
+    
     audio.src = url;
     audio.controls = false;
     audio.loop = true;
-    await audio.play().catch(() => {});
+    if (audioCtx.state == 'suspended'){
+        audio.pause();
+        audio.currentTime = 0;
+    } else {
+        audio.play();
+    }
+
     voiceNode?.disconnect();
     if (micStream){
         micStream.getTracks().forEach(t => t.stop());
@@ -306,10 +310,17 @@ instrFileInput.addEventListener('change', async (ev) => {
     if (!f) return;
     const url = URL.createObjectURL(f);
     const audio = new Audio();
+    
     audio.src = url;
     audio.controls = false;
     audio.loop = true;
-    await audio.play().catch(() => {});
+    if (audioCtx.state == 'suspended'){
+        audio.pause();
+        audio.currentTime = 0;
+    } else {
+        audio.play();
+    }
+    
     instrNode?.disconnect();
     instrNode = audioCtx.createMediaElementSource(audio);
     if (analyserDelayed) {
@@ -329,6 +340,12 @@ startBtn.addEventListener('click', async () => {
 
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
+    }
+    if (voiceNode.mediaElement){
+        voiceNode.mediaElement.play();
+    }
+    if (instrNode.mediaElement){
+        instrNode.mediaElement.play();
     }
 
     if (!rafId) {
@@ -383,17 +400,10 @@ gainEl.addEventListener('input', () => {
     if (gainNode) gainNode.gain.value = parseFloat(gainEl.value);
 });
 
-// TODO check if needed
-// initialize a small silent audio context so Mobile browsers allow resume on user gesture
 document.addEventListener('click', async function _init() {
     document.removeEventListener('click', _init);
     await ensureAudioContext();
-    // create a short silent buffer to prime audio context
-    const buf = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-    const s = audioCtx.createBufferSource();
-    s.buffer = buf;
-    s.start(0);
-    s.connect(audioCtx.destination);
+    await audioCtx.suspend();
     setStatus('idle');
 });
 
