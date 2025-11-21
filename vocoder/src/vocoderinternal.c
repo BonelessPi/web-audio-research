@@ -2,9 +2,7 @@
 #include <math.h>
 
 #define QUANTUM_SIZE 128
-#define MEL_PASSTHROUGH_THRESH .0000001f
-
-// TODO make all snake_case
+#define MEL_PASSTHROUGH_THRESH .000001f
 
 // Struct for internal operations of the custom AudioWorklet
 struct VocoderInternal {
@@ -31,6 +29,11 @@ struct VocoderInternal {
     kiss_fftr_cfg inverse_cfg;
 };
 
+void _create_mel_filter(struct VocoderInternal *p);
+void _apply_mel_filter(struct VocoderInternal *p);
+float freq_to_mel(float freq);
+float mel_to_freq(float mel);
+
 
 // Dynamically alloc an internal struct
 struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size, int hop_size,
@@ -55,7 +58,7 @@ struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size
         mel_num_bands = 128;
     }
     if (mel_freq_min > mel_freq_max){
-        float temp = mel_freq_max;
+        const float temp = mel_freq_max;
         mel_freq_max = mel_freq_min;
         mel_freq_min = temp;
     }
@@ -125,7 +128,8 @@ struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size
     // Init voice_buffer, instr_buffer, and output_buffer
     memset(p->voice_buffer, 0, 3*window_size*sizeof(float));
 
-    // TODO set mel_filter
+    // Create mel_filter
+    _create_mel_filter(p);
     
     // We can leave time_data, mel_amps, mel_bands, voice_freq_data, and instr_freq_data uninited
     kiss_fftr_alloc(window_size, 0, p->forward_cfg, &forward_cfg_size);
@@ -172,11 +176,9 @@ void vocoder_internal_process(struct VocoderInternal *p) {
         }
         kiss_fftr(p->forward_cfg, p->time_data, p->instr_freq_data);
         
-        // TODO sub-band
         for (int i = 0; i < window_size/2+1; ++i){
             p->mel_amps[i] = sqrtf(p->voice_freq_data[i].r*p->voice_freq_data[i].r + p->voice_freq_data[i].i*p->voice_freq_data[i].i);
         }
-
         _apply_mel_filter(p);
 
         for (int i = 0; i < window_size/2+1; ++i){
@@ -199,9 +201,33 @@ void vocoder_internal_process(struct VocoderInternal *p) {
     }
 }
 
+// TODO potentially remove from struct and do calc on the fly (sparse matrix)
+// Note: Should only be called during struct init
+//     (Modifies data in p->mel_amps and p->mel_bands)
 void _create_mel_filter(struct VocoderInternal *p){
-    // TODO implement
-    // TODO potentially remove from struct and do calc on the fly (sparse matrix)
+    const int M = p->mel_num_bands;
+    const int N = p->window_size/2 + 1;
+    // We can "borrow" the memory in mel_amps to avoid an alloc
+    // We use M+2 ints, and the borrowed space is N+M floats
+    int *bin = (int*)p->mel_amps;
+    
+    const float low_mel = freq_to_mel(p->mel_freq_min);
+    const float high_mel = freq_to_mel(p->mel_freq_max);
+    const float mel_delta = (high_mel-low_mel)/(M+1);
+
+    for (int i = 0; i < M+2; ++i){
+        bin[i] = ((p->window_size+1)*mel_to_freq(low_mel + i*mel_delta)/p->sample_rate);
+    }
+
+    memset(p->mel_filter,0,M*N*sizeof(float));
+    for (int r = 0; r < M; ++r){
+        for (int c = bin[r]+1; c < bin[r+1]; ++c){
+            p->mel_filter[r*N + c] = (float)(c - bin[r])/(bin[r+1] - bin[r]);
+        }
+        for (int c = bin[r+1]; c < bin[r+2]; ++c){
+            p->mel_filter[r*N + c] = (float)(bin[r+2] - c)/(bin[r+2] - bin[r+1]);
+        }
+    }
 }
 
 void _apply_mel_filter(struct VocoderInternal *p){
@@ -210,7 +236,7 @@ void _apply_mel_filter(struct VocoderInternal *p){
     // Multiply by Mel filter
     for (int r = 0; r < M; ++r){
         float temp = 0;
-        for (int c = 0; r < N; ++c){
+        for (int c = 0; c < N; ++c){
             temp += p->mel_filter[r*N + c] * p->mel_amps[c];
         }
         p->mel_bands[r] = temp;
@@ -227,5 +253,5 @@ float freq_to_mel(float freq){
 }
 
 float mel_to_freq(float mel){
-    return 700.0f * expm1f(m / 1127.0f)
+    return 700.0f * expm1f(mel / 1127.0f);
 }

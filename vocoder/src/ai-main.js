@@ -12,6 +12,7 @@ const wasmModule = await WebAssembly.compileStreaming(fetch('../build/vocoderint
 // TODO add outline to stop
 // TODO disable start button while playing
 // TODO add reset to the files to restart from beginning
+// TODO stop the top buttons from moving
 
 ///// DOM /////
 const canvas = document.getElementById('spectrogram');
@@ -135,7 +136,14 @@ async function createVocoderNode() {
     return new AudioWorkletNode(audioCtx, "my-vocoder", {
         numberOfInputs: 2,
         numberOfOutputs: 1,
-        processorOptions: { wasmModule, windowSize, hopSize: windowSize / 2 }
+        processorOptions: {
+            wasmModule,
+            windowSize,
+            hopSize: windowSize>>1,
+            melNumBands: 128,
+            melFreqMin: 0,
+            melFreqMax: 4000
+        }
     });
 }
 
@@ -546,8 +554,8 @@ fftSelect.addEventListener('change', async () => {
             vocoderNode.disconnect();
         } catch (e) {}
         vocoderNode = await createVocoderNode();
-        analyser?.connect(vocoderNode);
-        analyserDelayed?.connect(vocoderNode);
+        analyser?.connect(vocoderNode,0,0);
+        analyserDelayed?.connect(vocoderNode,0,1);
         vocoderNode.connect(audioCtx.destination);
     }
 });

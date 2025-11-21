@@ -7,9 +7,12 @@ class MyVocoder extends AudioWorkletProcessor {
         // TODO set the number of inputs and outputs correctly
 
         const wasmModule = options.processorOptions.wasmModule;
-        const windowSize = options.processorOptions.windowSize;
-        const hopSize = options.processorOptions.hopSize;
-        console.log({windowSize, hopSize});
+        const windowSize = options.processorOptions.windowSize ?? 2048;
+        const hopSize = options.processorOptions.hopSize ?? windowSize>>1;
+        const melNumBands = options.processorOptions.melNumBands ?? 128;
+        const melFreqMin = options.processorOptions.melFreqMin ?? 0;
+        const melFreqMax = options.processorOptions.melFreqMax ?? sampleRate>>1;
+        console.log({...options.processorOptions});
         this.ready = false;
         this.shouldStop = false;
 
@@ -50,7 +53,9 @@ class MyVocoder extends AudioWorkletProcessor {
             this.instance = instance;
             this.exports = instance.exports;
             this.memory = instance.exports.memory;
-            this.internalNodePtr = instance.exports.vocoder_internal_create(windowSize,hopSize);
+            this.internalNodePtr = instance.exports.vocoder_internal_create(
+                sampleRate, windowSize, hopSize, melNumBands, melFreqMin, melFreqMax
+            );
             this.ready = true;
         });
     }
@@ -66,7 +71,6 @@ class MyVocoder extends AudioWorkletProcessor {
 
         // This function runs until the audio context is suspended
         // TODO handle multiple channels??
-        console.log(inputList);
         const voice = inputList[0][0] ?? new Float32Array(128);
         const instr = inputList[1][0] ?? new Float32Array(128);
         const output = outputList[0][0] ?? new Float32Array(128);
@@ -74,6 +78,11 @@ class MyVocoder extends AudioWorkletProcessor {
         if (voice.length !== 128 || instr.length !== 128){
             throw new Error("Unexpected block size");
         }
+
+        // TODO investigate memory issue when setting output?
+        // console.log(this.exports.vocoder_internal_next_voice_quantum_ptr(this.internalNodePtr));
+        // console.log(this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr));
+        // console.log(this.exports.vocoder_internal_next_output_quantum_ptr(this.internalNodePtr));
 
         new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_voice_quantum_ptr(this.internalNodePtr),128).set(voice);
         new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr),128).set(instr);
