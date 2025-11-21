@@ -5,6 +5,34 @@ const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 
 // Controls
+const instrSource = document.getElementById("instrSource");
+const oscSection = document.getElementById("oscSection");
+const instrFileSection = document.getElementById("instrFileSection");
+const instrStatus = document.getElementById("instrStatus");
+
+const oscType = document.getElementById("oscType");
+const oscFreq = document.getElementById("oscFreq");
+
+let osc = null;
+let useOsc = false;
+
+
+instrSource.addEventListener("change", () => {
+    if (instrSource.value === "osc") {
+        oscSection.style.display = "block";
+        instrFileSection.style.display = "none";
+        instrStatus.textContent = "Using oscillator";
+        useOsc = true;
+    } else {
+        oscSection.style.display = "none";
+        instrFileSection.style.display = "block";
+        instrStatus.textContent = "Using instrument audio file";
+        useOsc = false;
+    }
+});
+oscSection.style.display = "block";
+instrFileSection.style.display = "none";
+
 const micBtn = document.getElementById('micBtn');
 const voiceFileInput = document.getElementById('voiceFileInput');
 const instrFileInput = document.getElementById('instrFileInput');
@@ -398,6 +426,16 @@ smoothingEl.addEventListener('input', () => {
 });
 gainEl.addEventListener('input', () => {
     if (gainNode) gainNode.gain.value = parseFloat(gainEl.value);
+});
+
+oscType.addEventListener("change", () => {
+    useOsc = true;
+    if (osc) osc.type = oscType.value;
+});
+
+oscFreq.addEventListener("input", () => {
+    useOsc = true;
+    if (osc) osc.frequency.value = Number(oscFreq.value);
 });
 
 document.addEventListener('click', async function _init() {

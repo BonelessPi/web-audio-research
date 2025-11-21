@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Web Vocoder (Canvas + Web Audio API)</title>
+    <style>
+        :root {
+            --bg: #0b0f14;
+            --panel: #0f1720;
+            --accent: #2dd4bf;
+            --muted: #7f98b0;
+            color-scheme: dark;
+        }
+
+        html, body {
+            height: 100%;
+            margin: 0;
+            font-family: Inter, system-ui, "Segoe UI", Roboto, Arial;
+        }
+
+        body {
+            background: linear-gradient(180deg, #071018, #071018 60%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+        }
+
+        .app {
+            width: 100%;
+            max-width: 1100px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 6px 30px rgba(2,6,23,0.6);
+        }
+
+        header {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        h1 {
+            font-size: 18px;
+            margin: 0;
+            color: #e6eef6;
+        }
+
+        .controls {
+            margin-left: auto;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        button, input, select {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.06);
+            color: #dbeafe;
+            padding: 8px 10px;
+            border-radius: 8px;
+        }
+
+        .primary {
+            border-color: var(--accent);
+            box-shadow: 0 2px 10px rgba(45,212,191,0.06);
+        }
+
+        canvas {
+            width: 100%;
+            height: 360px;
+            background: black;
+            border-radius: 8px;
+            display: block;
+        }
+
+        label {
+            color: #9fb0c8;
+            font-size: 13px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .grow {
+            flex: 1;
+        }
+
+        .small {
+            font-size: 13px;
+            color: #9fb0c8;
+        }
+
+        footer {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        option {
+            background-color: #0f1720;
+            color: #e6eef6;
+        }
+
+        .panel {
+            background: var(--panel);
+            padding: 14px;
+            border-radius: 10px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.25);
+        }
+
+        .panel h2 {
+            margin: 0;
+            font-size: 15px;
+            color: #c5d2e1;
+        }
+
+        .source-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.02);
+            font-size: 12px;
+            color: #cfeff0;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #444;
+            box-shadow: 0 0 4px rgba(0,0,0,0.6) inset;
+        }
+
+        .dot.active {
+            background: #2dd4bf;
+            box-shadow: 0 0 8px rgba(45,212,191,0.6);
+        }
+
+        .muted {
+            opacity: 0.6;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .file-name {
+            font-size: 12px;
+            color: #cfeff0;
+            opacity: 0.9;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 180px;
+        }
+
+        .toggle-btn {
+            padding: 6px 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .toggle-btn.active {
+            border-color: var(--accent);
+            box-shadow: 0 2px 12px rgba(45,212,191,0.08);
+        }
+
+        .controls .small {
+            color: var(--muted);
+        }
+
+        .status-line {
+            display:flex;
+            gap:10px;
+            align-items:center;
+            justify-content:space-between;
+            margin-top:10px;
+        }
+
+        .status-area {
+            font-size:13px;
+            color:#cfeff0;
+            display:flex;
+            gap:10px;
+            align-items:center;
+        }
+
+        .freq-readout {
+            font-size:13px;
+            color:#cfeff0;
+            min-width:48px;
+            text-align:right;
+        }
+
+        .center {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app">
+        <header>
+            <h1>Web Vocoder — HTML Canvas + Web Audio API</h1>
+
+            <div class="controls">
+                <button id="startBtn" class="primary muted" disabled>Start</button>
+                <button id="stopBtn" class="muted">Stop</button>
+                <div class="small" id="topStatus">Status: idle</div>
+            </div>
+        </header>
+
+        <canvas id="spectrogram"></canvas>
+
+        <div class="row" style="margin-top:18px; gap:18px">
+
+            <!-- Voice (Modulator) -->
+            <div class="panel">
+                <h2>Voice Input (Modulator)</h2>
+
+                <div class="source-row">
+                    <div class="control-group">
+                        <button id="micBtn" class="toggle-btn">Enable Microphone</button>
+                        <div class="small">or</div>
+                        <input id="voiceFileInput" type="file" accept="audio/*" />
+                    </div>
+
+                    <div class="badge" title="Voice source active indicator">
+                        <div id="voiceDot" class="dot"></div>
+                        <div id="voiceSourceLabel" class="small">No input</div>
+                    </div>
+                </div>
+
+                <div class="small">Selected voice file: <span id="voiceFileName" class="file-name muted">—</span></div>
+                <div id="voiceStatus" class="small muted">No voice input selected</div>
+            </div>
+
+            <!-- Instrument (Carrier) -->
+            <div class="panel">
+                <h2>Instrument Input (Carrier)</h2>
+
+                <div class="source-row">
+                    <div class="control-group">
+                        <button id="instrOscBtn" class="toggle-btn active">Use Oscillator</button>
+                        <button id="instrFileBtn" class="toggle-btn">Use Audio File</button>
+                    </div>
+
+                    <div class="badge" title="Instrument source active indicator">
+                        <div id="instrDot" class="dot active"></div>
+                        <div id="instrSourceLabel" class="small">Oscillator</div>
+                    </div>
+                </div>
+
+                <!-- File section (always visible, but becomes inactive when oscillator is active) -->
+                <div id="instrFileSection" class="small muted">
+                    <label>Instrument file</label>
+                    <input id="instrFileInput" type="file" accept="audio/*" />
+                    <div class="small">Selected: <span id="instrFileName" class="file-name">—</span></div>
+                </div>
+
+                <!-- Oscillator controls -->
+                <div id="oscSection">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <label style="margin-right:6px">Waveform</label>
+                        <select id="oscType">
+                            <option value="sine">sine</option>
+                            <option value="square">square</option>
+                            <option value="sawtooth" selected>sawtooth</option>
+                            <option value="triangle">triangle</option>
+                        </select>
+                    </div>
+
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <label>Frequency</label>
+                        <input id="oscFreq" type="range" min="40" max="2000" step="1" value="440" />
+                        <div class="freq-readout" id="oscFreqReadout">440 Hz</div>
+                    </div>
+                </div>
+
+                <div id="instrStatus" class="small muted">Using oscillator (default)</div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div style="width:220px">
+                <label>FFT size</label>
+                <select id="fftSize">
+                    <option value="1024">1024</option>
+                    <option value="2048" selected>2048</option>
+                    <option value="4096">4096</option>
+                    <option value="8192">8192</option>
+                </select>
+            </div>
+
+            <div>
+                <label>Smoothing</label>
+                <input id="smoothing" type="range" min="0" max="0.99" step="0.01" value="0.8" />
+            </div>
+
+            <div>
+                <label>Gain</label>
+                <input id="gain" type="range" min="0" max="4" step="0.01" value="1" />
+            </div>
+
+            <div class="grow small" id="status">Status: idle</div>
+        </div>
+
+        <div class="status-line">
+            <div class="status-area">
+                <div class="small">Tip: Drop an audio file or click "Enable Microphone".</div>
+            </div>
+            <div class="status-area">
+                <div class="small">Left=voice (modulator) • Right=instrument (carrier)</div>
+            </div>
+        </div>
+
+        <footer>Tip: The spectrogram scrolls left-to-right (new data on the right).</footer>
+    </div>
+
+    <script type="module" src="src/ai-main.js"></script>
+</body>
+
+</html>
