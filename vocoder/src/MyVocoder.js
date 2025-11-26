@@ -1,6 +1,12 @@
 // TODO improve naming of Make target, module name, filenames, classnames, etc
 // TODO make node class to simplify clean up and allow changing of window size and hop size??
 class MyVocoder extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+        return [
+            { name: 'subband', defaultValue: 1, automationRate: 'k-rate' },
+        ];
+    }
+
     constructor(options) {
         super();
 
@@ -88,7 +94,8 @@ class MyVocoder extends AudioWorkletProcessor {
         new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr),128).set(instr);
         output.set(new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_output_quantum_ptr(this.internalNodePtr),128));
 
-        this.exports.vocoder_internal_process(this.internalNodePtr);
+        console.log("subband",parameters.subband[0]);
+        this.exports.vocoder_internal_process(this.internalNodePtr, parameters.subband[0]);
 
         return true;
     }

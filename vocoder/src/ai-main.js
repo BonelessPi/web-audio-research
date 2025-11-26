@@ -1,5 +1,4 @@
 // main.js — refactored and updated
-// Note: this file expects the WASM and MyVocoder worklet the same as before.
 
 const wasmModule = await WebAssembly.compileStreaming(fetch('../build/vocoderinternal.wasm'));
 
@@ -36,12 +35,13 @@ const instrSourceLabel = document.getElementById('instrSourceLabel');
 const instrStatus = document.getElementById('instrStatus');
 const instrFileName = document.getElementById('instrFileName');
 
-// osc controls
+// instrOscNode controls
 const oscType = document.getElementById('oscType');
 const oscFreq = document.getElementById('oscFreq');
 const oscFreqReadout = document.getElementById('oscFreqReadout');
 
 // general controls
+const subbandBtn = document.getElementById('subbandBtn')
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const fftSelect = document.getElementById('fftSize');
@@ -49,25 +49,32 @@ const smoothingEl = document.getElementById('smoothing');
 const gainEl = document.getElementById('gain');
 
 // canvas helpers
-const marginLeft = 50;
+const marginLeft = 0;
 const ctx = canvas.getContext('2d');
 
 ///// Audio graph state /////
 let audioCtx = null;
-let vocoderNode = null;
-let gainNode = null;
-let analyser = null;
-let analyserDelayed = null;
 
-let voiceNode = null;     // will be a MediaStreamSource, MediaElementSource, or silent BufferSource
-let instrNode = null;     // will be an OscillatorNode (special) or MediaElementSource or silent BufferSource
-let osc = null;           // OscillatorNode if in use
 let micStream = null;
+let voiceNode = null;
+let voiceGainNode = null;
+
+let instrFileNode = null;
+let instrFileGainNode = null;
+let instrOscNode = null;
+let instrOscGainNode = null;
+
+let analyserVoice = null;
+let analyserInstr = null;
+let analyserOutput = null;
+let vocoderNode = null;
 
 let rafId = null;
 
 // UI state
-let usingOsc = true; // default
+let usingOsc = true;
+
+let subband = true;
 
 ///// Canvas setup /////
 function resizeCanvas() {
@@ -78,7 +85,6 @@ function resizeCanvas() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
 
 ///// Utility UI functions /////
 function setTopStatus(s) {
@@ -105,9 +111,9 @@ function setInstrFileName(name) {
     instrFileName.textContent = name || '—';
 }
 function enableStartIfReady() {
-    // simple readiness: a voice source exists (mic or file) AND (instr: either osc selected OR file loaded)
+    // simple readiness: a voice source exists (mic or file) AND (instr: either instrOscNode selected OR file loaded)
     const voiceReady = !!voiceNode || !!micStream;
-    const instrReady = usingOsc || !!instrNode;
+    const instrReady = usingOsc ? !!instrOscNode : !!instrFileNode;
     startBtn.disabled = !(voiceReady && instrReady);
     startBtn.classList.toggle('muted', startBtn.disabled);
 }
@@ -139,7 +145,7 @@ async function createVocoderNode() {
         processorOptions: {
             wasmModule,
             windowSize,
-            hopSize: windowSize>>1,
+            hopSize: windowSize >> 1,
             melNumBands: 128,
             melFreqMin: 0,
             melFreqMax: 4000
@@ -147,7 +153,33 @@ async function createVocoderNode() {
     });
 }
 
-///// Visualizer /////
+// draw a single vertical column for the frequency array into the canvas at the rightmost column,
+// mapping it to the vertical slice yStart..yEnd
+function drawSpectrogramColumn(freqArray, yStart = 0, yEnd = canvas.height) {
+    const w = canvas.width;
+    const h = yEnd - yStart;
+    const img = ctx.createImageData(1, h);
+    const bins = freqArray.length;
+
+    for (let y = 0; y < h; y++) {
+        const frac = 1 - y / (h - 1);
+        const exponent = 0.6;
+        const binIndex = Math.floor(Math.pow(frac, exponent) * (bins - 1));
+        const v = freqArray[binIndex];
+
+        const hue = 240 - (v / 255) * 240;
+        const light = Math.min(85, 30 + (v / 255) * 70);
+        const [r, g, b] = hslToRgb(hue, 1, light / 100);
+
+        const idx = y * 4;
+        img.data[idx] = r;
+        img.data[idx + 1] = g;
+        img.data[idx + 2] = b;
+        img.data[idx + 3] = 255;
+    }
+    ctx.putImageData(img, w - 1, yStart);
+}
+
 function magnitudeToColor(v) {
     const norm = v / 255;
     const hue = 240 - norm * 240;
@@ -177,55 +209,50 @@ function hslToRgb(h, s, l) {
     return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
-function drawSpectrogramColumn(freqArray, yStart = 0, yEnd = canvas.height) {
-    const w = canvas.width;
-    const h = yEnd - yStart;
-    const img = ctx.createImageData(1, h);
-    const bins = freqArray.length;
-
-    for (let y = 0; y < h; y++) {
-        const frac = 1 - y / (h - 1);
-        const exponent = 0.6;
-        const binIndex = Math.floor(Math.pow(frac, exponent) * (bins - 1));
-        const v = freqArray[binIndex];
-
-        const hue = 240 - (v / 255) * 240;
-        const light = Math.min(85, 30 + (v / 255) * 70);
-        const [r, g, b] = hslToRgb(hue, 1, light / 100);
-
-        const idx = y * 4;
-        img.data[idx] = r;
-        img.data[idx + 1] = g;
-        img.data[idx + 2] = b;
-        img.data[idx + 3] = 255;
-    }
-    ctx.putImageData(img, w - 1, yStart);
-}
-
+// Visualizer loop now handles three analysers and three bands stacked vertically.
+// Top band: voice (analyserVoice), middle band: instr (analyserInstr), bottom band: output (analyserOutput)
 async function startVisualizing() {
-    if (!analyser) analyser = await createAnalyser();
-    if (!analyserDelayed) analyserDelayed = await createAnalyser();
-    const bins = analyser.frequencyBinCount;
-    const data = new Uint8Array(bins);
-    const dataDelayed = new Uint8Array(bins);
+    if (!analyserVoice) analyserVoice = await createAnalyser();
+    if (!analyserInstr) analyserInstr = await createAnalyser();
+    if (!analyserOutput) analyserOutput = await createAnalyser();
+
+    const binsV = analyserVoice.frequencyBinCount;
+    const binsI = analyserInstr.frequencyBinCount;
+    const binsO = analyserOutput.frequencyBinCount;
+
+    const dataV = new Uint8Array(binsV);
+    const dataI = new Uint8Array(binsI);
+    const dataO = new Uint8Array(binsO);
 
     function loop() {
-        analyser.getByteFrequencyData(data);
-        analyserDelayed.getByteFrequencyData(dataDelayed);
+        // fill arrays
+        analyserVoice.getByteFrequencyData(dataV);
+        analyserInstr.getByteFrequencyData(dataI);
+        analyserOutput.getByteFrequencyData(dataO);
 
+        // compute band heights (split canvas into 3 horizontal bands)
         const h = canvas.height;
-        const half = Math.floor(h / 2);
+        const bandH = Math.floor(h / 3);
+        const band1Start = 0;
+        const band1End = band1Start + bandH;
+        const band2Start = band1End;
+        const band2End = band2Start + bandH;
+        const band3Start = band2End;
+        const band3End = h;
 
+        // shift existing plot left by 1 pixel for the plotting region (exclude marginLeft)
         const plotW = canvas.width - marginLeft;
+        // copy the content one pixel left within plotting area
         ctx.drawImage(canvas, marginLeft + 1, 0, plotW - 1, h, marginLeft, 0, plotW - 1, h);
 
-        // original analyser (top)
-        drawSpectrogramColumn(data, 0, half);
-        // delayed analyser (bottom)
-        drawSpectrogramColumn(dataDelayed, half, h);
+        // Draw rightmost column for each band
+        drawSpectrogramColumn(dataV, band1Start, band1End); // voice top
+        drawSpectrogramColumn(dataI, band2Start, band2End); // instr middle
+        drawSpectrogramColumn(dataO, band3Start, band3End); // output bottom
 
         rafId = requestAnimationFrame(loop);
     }
+
     if (rafId) cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(loop);
 }
@@ -236,81 +263,43 @@ function stopVisualizing() {
 }
 
 ///// Audio graph creation / teardown /////
-async function recreateAudioGraph() {
+async function createAudioGraph() {
     await ensureAudioContext();
 
-    // make sure we have sane nodes: if missing, create silent buffer sources to keep graph stable
-    if (!voiceNode) {
-        voiceNode = audioCtx.createBufferSource();
-        voiceNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-        voiceNode.start(0);
-    } else {
-        try { voiceNode.disconnect(); } catch (e) {}
-    }
+    voiceNode = audioCtx.createBufferSource();
+    voiceNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    voiceNode.start(0);
 
-    if (!instrNode) {
-        instrNode = audioCtx.createBufferSource();
-        instrNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-        instrNode.start(0);
-    } else {
-        try { if (instrNode) instrNode.disconnect(); } catch (e) {}
-    }
+    voiceGainNode = audioCtx.createGain();
+    voiceGainNode.gain.value = parseFloat(gainEl.value);
+    instrOscNode = audioCtx.createOscillator();
+    instrOscNode.type = oscType.value;
+    instrOscNode.frequency.value = Number(oscFreq.value);
+    instrOscNode.start();
+    instrOscGainNode = audioCtx.createGain();
+    instrOscGainNode.gain.value = 0.0;
+    instrFileGainNode = audioCtx.createGain();
+    instrFileGainNode.gain.value = 0.0;
 
-    // teardown old vocoder node
-    if (vocoderNode) {
-        try {
-            vocoderNode.port.postMessage({ type: "shutdown" });
-            vocoderNode.port.close?.();
-            vocoderNode.disconnect();
-        } catch (e) {}
-        vocoderNode = null;
-    }
     vocoderNode = await createVocoderNode();
 
-    if (gainNode) {
-        try { gainNode.disconnect(); } catch (e) {}
-    }
-    gainNode = audioCtx.createGain();
-    gainNode.gain.value = parseFloat(gainEl.value);
+    analyserVoice = await createAnalyser();
+    analyserInstr = await createAnalyser();
+    analyserOutput = await createAnalyser();
 
-    // create or refresh analysers
-    if (analyser) {
-        try { analyser.disconnect(); } catch (e) {}
-    }
-    analyser = await createAnalyser();
-
-    if (analyserDelayed) {
-        try { analyserDelayed.disconnect(); } catch (e) {}
-    }
-    analyserDelayed = await createAnalyser();
-
-    // Setup sources:
     // Voice -> gain -> analyser -> vocoder input 0
-    voiceNode.connect(gainNode);
-    gainNode.connect(analyser);
-    analyser.connect(vocoderNode, 0, 0);
+    voiceNode.connect(voiceGainNode);
+    voiceGainNode.connect(analyserVoice);
+    analyserVoice.connect(vocoderNode, 0, 0);
 
-    // Instrument: either oscillator (create & start) -> analyserDelayed -> vocoder input 1
-    if (usingOsc) {
-        // if an existing oscillator exists, stop it
-        if (osc) {
-            try { osc.stop(); } catch (e) {}
-            try { osc.disconnect(); } catch (e) {}
-            osc = null;
-        }
+    // Instrument -> analyser -> vocoder input 1
+    instrOscNode.connect(instrOscGainNode);
+    instrOscGainNode.connect(analyserInstr);
+    instrFileGainNode.connect(analyserInstr);
+    analyserInstr.connect(vocoderNode, 0, 1);
 
-        osc = audioCtx.createOscillator();
-        osc.type = oscType.value;
-        osc.frequency.value = Number(oscFreq.value);
-        // connect oscillator to analyserDelayed
-        osc.start();
-        instrNode = osc; // keep reference for playback/pause logic
-    }
-
-    instrNode.connect(analyserDelayed);
-    analyserDelayed.connect(vocoderNode, 0, 1);
-
-    vocoderNode.connect(audioCtx.destination);
+    vocoderNode.connect(analyserOutput);
+    analyserOutput.connect(audioCtx.destination);
 }
 
 async function stopAudioGraph() {
@@ -318,19 +307,12 @@ async function stopAudioGraph() {
     try { await audioCtx.suspend(); } catch (e) {}
     stopVisualizing();
 
-    // stop/cleanup oscillator if present
-    if (osc) {
-        try { osc.stop(); } catch (e) {}
-        try { osc.disconnect(); } catch (e) {}
-        osc = null;
-    }
-
     // pause media elements if any
     if (voiceNode && voiceNode.mediaElement) {
         try { voiceNode.mediaElement.pause(); } catch (e) {}
     }
-    if (instrNode && instrNode.mediaElement) {
-        try { instrNode.mediaElement.pause(); } catch (e) {}
+    if (instrFileNode && instrFileNode.mediaElement) {
+        try { instrFileNode.mediaElement.pause(); } catch (e) {}
     }
 
     try {
@@ -365,9 +347,9 @@ micBtn.addEventListener('click', async () => {
         setVoiceActive(true, 'Microphone');
         setVoiceStatus('Microphone active');
         setVoiceFileName('');
-        // Connect to analyser if graph exists
-        if (analyser) {
-            try { voiceNode.connect(analyser); } catch (e) { /* will be reconnected in recreateAudioGraph */ }
+
+        if (voiceGainNode) {
+            try { voiceNode.connect(voiceGainNode); } catch (e) { /* will be reconnected in recreateAudioGraph */ }
         }
 
         setTopStatus('microphone enabled');
@@ -404,9 +386,9 @@ voiceFileInput.addEventListener('change', async (ev) => {
     setVoiceActive(true, 'File');
     setVoiceStatus('Loaded voice file');
     setVoiceFileName(f.name || 'selected audio');
-    // connect to analyser if present
-    if (analyser) {
-        try { voiceNode.connect(analyser); } catch (e) {}
+
+    if (voiceGainNode) {
+        try { voiceNode.connect(voiceGainNode); } catch (e) {}
     }
 
     // if there was a mic stream active, stop it
@@ -437,18 +419,18 @@ instrFileInput.addEventListener('change', async (ev) => {
         try { await audio.play(); } catch (e) {}
     }
 
-    try { if (instrNode) instrNode.disconnect(); } catch (e) {}
+    try { if (instrFileNode) instrFileNode.disconnect(); } catch (e) {}
 
-    instrNode = audioCtx.createMediaElementSource(audio);
+    instrFileNode = audioCtx.createMediaElementSource(audio);
     setInstrFileName(f.name || 'selected audio');
     instrStatus.textContent = 'Loaded instrument file';
     setInstrActive(true, 'File');
     // when file is selected we automatically switch to file mode
     usingOsc = false;
     updateInstrUI();
-    // connect to analyserDelayed if present
-    if (analyserDelayed) {
-        try { instrNode.connect(analyserDelayed); } catch (e) {}
+    
+    if (instrFileGainNode) {
+        try { instrFileNode.connect(instrFileGainNode); } catch (e) {}
     }
     setTopStatus('instrument file loaded');
     enableStartIfReady();
@@ -456,14 +438,25 @@ instrFileInput.addEventListener('change', async (ev) => {
 
 ///// Instrument mode UI (two big visible choices) /////
 instrOscBtn.addEventListener('click', () => {
+    instrOscGainNode.gain.value = 1.0;
+    instrFileGainNode.gain.value = 0.0;
     usingOsc = true;
     updateInstrUI();
     enableStartIfReady();
 });
 instrFileBtn.addEventListener('click', () => {
+    instrOscGainNode.gain.value = 0.0;
+    instrFileGainNode.gain.value = 1.0;
     usingOsc = false;
     updateInstrUI();
     enableStartIfReady();
+});
+
+subbandBtn.addEventListener('click', () => {
+    subband = !subband;
+    if (vocoderNode){
+        vocoderNode.parameters.get('subband').value = subband;
+    }
 });
 
 function updateInstrUI() {
@@ -473,7 +466,7 @@ function updateInstrUI() {
     // update dot + label
     setInstrActive(true, usingOsc ? 'Oscillator' : 'File');
 
-    // visually dim file section if using osc
+    // visually dim file section if using instrOscNode
     document.getElementById('instrFileSection').classList.toggle('muted', usingOsc);
 
     // update status text
@@ -488,12 +481,12 @@ function updateInstrUI() {
 
 ///// oscillator UI updates /////
 oscType.addEventListener('change', () => {
-    if (osc) osc.type = oscType.value;
+    if (instrOscNode) instrOscNode.type = oscType.value;
 });
 oscFreq.addEventListener('input', () => {
     const v = Number(oscFreq.value);
     oscFreqReadout.textContent = v + ' Hz';
-    if (osc) osc.frequency.value = v;
+    if (instrOscNode) instrOscNode.frequency.value = v;
 });
 
 ///// Start/Stop buttons /////
@@ -502,7 +495,7 @@ startBtn.addEventListener('click', async () => {
 
     // check readiness
     const voiceReady = !!voiceNode || !!micStream;
-    const instrReady = usingOsc || !!instrNode;
+    const instrReady = usingOsc ? !!instrOscNode : !!instrFileNode;
     if (!voiceReady) {
         setTopStatus('please enable microphone or load voice file');
         return;
@@ -512,8 +505,6 @@ startBtn.addEventListener('click', async () => {
         return;
     }
 
-    await recreateAudioGraph();
-
     if (audioCtx.state === 'suspended') {
         try { await audioCtx.resume(); } catch (e) {}
     }
@@ -522,8 +513,8 @@ startBtn.addEventListener('click', async () => {
     if (voiceNode && voiceNode.mediaElement) {
         try { voiceNode.mediaElement.play(); } catch (e) {}
     }
-    if (instrNode && instrNode.mediaElement) {
-        try { instrNode.mediaElement.play(); } catch (e) {}
+    if (instrFileNode && instrFileNode.mediaElement) {
+        try { instrFileNode.mediaElement.play(); } catch (e) {}
     }
 
     // start visualizer
@@ -541,30 +532,32 @@ stopBtn.addEventListener('click', async () => {
 ///// Control changes affecting existing nodes /////
 fftSelect.addEventListener('change', async () => {
     const fftSize = parseInt(fftSelect.value, 10);
-    if (analyser) analyser.fftSize = fftSize;
-    if (analyserDelayed) analyserDelayed.fftSize = fftSize;
+    if (analyserVoice) analyserVoice.fftSize = fftSize;
+    if (analyserInstr) analyserInstr.fftSize = fftSize;
+    if (analyserOutput) analyserOutput.fftSize = fftSize;
 
     // re-create vocoder node to apply new window size
     if (vocoderNode) {
         try {
-            analyser?.disconnect();
-            analyserDelayed?.disconnect();
+            analyserVoice?.disconnect();
+            analyserInstr?.disconnect();
             vocoderNode.port.postMessage({ type: "shutdown" });
             vocoderNode.port.close?.();
             vocoderNode.disconnect();
         } catch (e) {}
         vocoderNode = await createVocoderNode();
-        analyser?.connect(vocoderNode,0,0);
-        analyserDelayed?.connect(vocoderNode,0,1);
-        vocoderNode.connect(audioCtx.destination);
+        analyserVoice?.connect(vocoderNode,0,0);
+        analyserInstr?.connect(vocoderNode,0,1);
+        vocoderNode.connect(analyserOutput);
     }
 });
 smoothingEl.addEventListener('input', () => {
-    if (analyser) analyser.smoothingTimeConstant = parseFloat(smoothingEl.value);
-    if (analyserDelayed) analyserDelayed.smoothingTimeConstant = parseFloat(smoothingEl.value);
+    if (analyserVoice) analyserVoice.smoothingTimeConstant = parseFloat(smoothingEl.value);
+    if (analyserInstr) analyserInstr.smoothingTimeConstant = parseFloat(smoothingEl.value);
+    if (analyserOutput) analyserOutput.smoothingTimeConstant = parseFloat(smoothingEl.value);
 });
 gainEl.addEventListener('input', () => {
-    if (gainNode) gainNode.gain.value = parseFloat(gainEl.value);
+    if (voiceGainNode) voiceGainNode.gain.value = parseFloat(gainEl.value);
 });
 
 ///// Boot-time friendly behavior /////
@@ -573,6 +566,7 @@ document.addEventListener('click', async function _init() {
     await ensureAudioContext();
     // start suspended so audio won't play until user explicitly starts
     await audioCtx.suspend();
+    createAudioGraph();
     setTopStatus('idle');
     setStatus('idle');
     setInstrFileName('');

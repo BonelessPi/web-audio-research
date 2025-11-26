@@ -2,7 +2,6 @@
 #include <math.h>
 
 #define QUANTUM_SIZE 128
-#define MEL_PASSTHROUGH_THRESH .000001f
 
 // Struct for internal operations of the custom AudioWorklet
 struct VocoderInternal {
@@ -22,17 +21,14 @@ struct VocoderInternal {
     float *time_data;
     float *mel_amps;
     float *mel_bands;
-    float *mel_filter;
+    int *MEL_BIN;
     kiss_fft_cpx *voice_freq_data;
     kiss_fft_cpx *instr_freq_data;
     kiss_fftr_cfg forward_cfg;
     kiss_fftr_cfg inverse_cfg;
 };
 
-void _create_mel_filter(struct VocoderInternal *p);
 void _apply_mel_filter(struct VocoderInternal *p);
-float freq_to_mel(float freq);
-float mel_to_freq(float mel);
 
 
 // Dynamically alloc an internal struct
@@ -85,7 +81,7 @@ struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size
     p->index = 0;
     
     // Calculate size to malloc
-    size_t bytes_needed = 5*window_size*sizeof(float) + 2*(window_size/2 + 1)*sizeof(kiss_fft_cpx) + ((window_size/2 + 1) + mel_num_bands + (window_size/2 + 1)*mel_num_bands)*sizeof(float);
+    size_t bytes_needed = 5*window_size*sizeof(float) + 2*(window_size/2 + 1)*sizeof(kiss_fft_cpx) + ((window_size/2 + 1) + mel_num_bands)*sizeof(float) + (mel_num_bands+2)*sizeof(int);
     size_t forward_cfg_size = 0, inverse_cfg_size = 0;
     kiss_fftr_alloc(window_size, 0, NULL, &forward_cfg_size);
     kiss_fftr_alloc(window_size, 1, NULL, &inverse_cfg_size);
@@ -106,8 +102,8 @@ struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size
     p->time_data = p->output_buffer + window_size;
     p->mel_amps = p->time_data + window_size;
     p->mel_bands = p->mel_amps + window_size/2 + 1;
-    p->mel_filter = p->mel_bands + mel_num_bands;
-    p->voice_freq_data = (kiss_fft_cpx*)(p->mel_filter + (window_size/2 + 1)*mel_num_bands);
+    p->MEL_BIN = (int*)(p->mel_bands + mel_num_bands);
+    p->voice_freq_data = (kiss_fft_cpx*)(p->MEL_BIN + mel_num_bands+2);
     p->instr_freq_data = p->voice_freq_data + window_size/2 + 1;
     char *cfg_base = (char*)(p->instr_freq_data + window_size/2 + 1);
     p->forward_cfg = (kiss_fftr_cfg)cfg_base;
@@ -128,8 +124,11 @@ struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size
     // Init voice_buffer, instr_buffer, and output_buffer
     memset(p->voice_buffer, 0, 3*window_size*sizeof(float));
 
-    // Create mel_filter
-    _create_mel_filter(p);
+    // Create MEL_BIN
+    float start = logf(mel_freq_min), stop = logf(mel_freq_max);
+    for (int i = 0; i < mel_num_bands+2; ++i){
+        p->MEL_BIN[i] = window_size*(expf(start + i*(stop-start)/(mel_num_bands+1)))/sample_rate;
+    }
     
     // We can leave time_data, mel_amps, mel_bands, voice_freq_data, and instr_freq_data uninited
     kiss_fftr_alloc(window_size, 0, p->forward_cfg, &forward_cfg_size);
@@ -157,7 +156,7 @@ float* vocoder_internal_next_output_quantum_ptr(struct VocoderInternal *p){
     return p->output_buffer + p->index;
 }
 
-void vocoder_internal_process(struct VocoderInternal *p) {
+void vocoder_internal_process(struct VocoderInternal *p, int subband) {
     // JS should have done the copy in and out of the buffer views. Advance index
     const int window_size = p->window_size;
     const int hop_size = p->hop_size;
@@ -179,15 +178,13 @@ void vocoder_internal_process(struct VocoderInternal *p) {
         for (int i = 0; i < window_size/2+1; ++i){
             p->mel_amps[i] = sqrtf(p->voice_freq_data[i].r*p->voice_freq_data[i].r + p->voice_freq_data[i].i*p->voice_freq_data[i].i);
         }
-        _apply_mel_filter(p);
-
+        if (subband){
+            _apply_mel_filter(p);
+        }
+        
         for (int i = 0; i < window_size/2+1; ++i){
-            float amp = p->mel_amps[i];
-            if (amp < MEL_PASSTHROUGH_THRESH){
-                amp = 1.0f;
-            }
-            p->instr_freq_data[i].r *= amp;
-            p->instr_freq_data[i].i *= amp;
+            p->instr_freq_data[i].r *= p->mel_amps[i];
+            p->instr_freq_data[i].i *= p->mel_amps[i];
         }
         kiss_fftri(p->inverse_cfg, p->instr_freq_data, p->time_data);
 
@@ -201,57 +198,43 @@ void vocoder_internal_process(struct VocoderInternal *p) {
     }
 }
 
-// TODO potentially remove from struct and do calc on the fly (sparse matrix)
-// Note: Should only be called during struct init
-//     (Modifies data in p->mel_amps and p->mel_bands)
-void _create_mel_filter(struct VocoderInternal *p){
-    const int M = p->mel_num_bands;
-    const int N = p->window_size/2 + 1;
-    // We can "borrow" the memory in mel_amps to avoid an alloc
-    // We use M+2 ints, and the borrowed space is N+M floats
-    int *bin = (int*)p->mel_amps;
-    
-    const float low_mel = freq_to_mel(p->mel_freq_min);
-    const float high_mel = freq_to_mel(p->mel_freq_max);
-    const float mel_delta = (high_mel-low_mel)/(M+1);
 
-    for (int i = 0; i < M+2; ++i){
-        bin[i] = ((p->window_size+1)*mel_to_freq(low_mel + i*mel_delta)/p->sample_rate);
+inline float _calc_mel_filter_val(struct VocoderInternal *p, int r, int c){
+    if (c > p->MEL_BIN[r] && c < p->MEL_BIN[r+1]){
+        return (float)(c - p->MEL_BIN[r])/(p->MEL_BIN[r+1] - p->MEL_BIN[r]);
     }
-
-    memset(p->mel_filter,0,M*N*sizeof(float));
-    for (int r = 0; r < M; ++r){
-        for (int c = bin[r]+1; c < bin[r+1]; ++c){
-            p->mel_filter[r*N + c] = (float)(c - bin[r])/(bin[r+1] - bin[r]);
-        }
-        for (int c = bin[r+1]; c < bin[r+2]; ++c){
-            p->mel_filter[r*N + c] = (float)(bin[r+2] - c)/(bin[r+2] - bin[r+1]);
-        }
+    if (c > p->MEL_BIN[r+1] && c < p->MEL_BIN[r+2]){
+        return (float)(p->MEL_BIN[r+2] - c)/(p->MEL_BIN[r+2] - p->MEL_BIN[r+1]);
     }
+    return 0.0;
 }
 
 void _apply_mel_filter(struct VocoderInternal *p){
     const int M = p->mel_num_bands;
     const int N = p->window_size/2 + 1;
+
     // Multiply by Mel filter
     for (int r = 0; r < M; ++r){
         float temp = 0;
-        for (int c = 0; c < N; ++c){
-            temp += p->mel_filter[r*N + c] * p->mel_amps[c];
+        for (int c = p->MEL_BIN[r]+1; c < p->MEL_BIN[r+2]; ++c){
+            temp += _calc_mel_filter_val(p,r,c) * p->mel_amps[c];
         }
         p->mel_bands[r] = temp;
     }
+
     // Multiply by Mel filter transpose
     memset(p->mel_amps,0,N*sizeof(float));
-    for (int i = 0; i < M*N; ++i){
-        p->mel_amps[i%N] += p->mel_filter[i] * p->mel_bands[i/N];
+    for (int r = 0; r < M; ++r){
+        for (int c = p->MEL_BIN[r]+1; c < p->MEL_BIN[r+2]; ++c){
+            p->mel_amps[c] += _calc_mel_filter_val(p,r,c) * p->mel_bands[r];
+        }
     }
-}
 
-float freq_to_mel(float freq){
-    return 1127.0f * log1pf(freq / 700.0f);
-}
-
-float mel_to_freq(float mel){
-    return 700.0f * expm1f(mel / 1127.0f);
+    // Bins outside the range of the mel filter are unchanged
+    for (int i = 0; i < N; ++i){
+        if (i == p->MEL_BIN[0]){
+            i = p->MEL_BIN[M+1];
+        }
+        p->mel_amps[i] = sqrtf(p->voice_freq_data[i].r*p->voice_freq_data[i].r + p->voice_freq_data[i].i*p->voice_freq_data[i].i);
+    }
 }
