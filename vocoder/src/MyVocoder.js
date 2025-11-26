@@ -3,7 +3,7 @@
 class MyVocoder extends AudioWorkletProcessor {
     static get parameterDescriptors() {
         return [
-            { name: 'subband', defaultValue: 1, automationRate: 'k-rate' },
+            { name: 'subband', defaultValue: 0, automationRate: 'k-rate' },
         ];
     }
 
@@ -94,7 +94,6 @@ class MyVocoder extends AudioWorkletProcessor {
         new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr),128).set(instr);
         output.set(new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_output_quantum_ptr(this.internalNodePtr),128));
 
-        console.log("subband",parameters.subband[0]);
         this.exports.vocoder_internal_process(this.internalNodePtr, parameters.subband[0]);
 
         return true;

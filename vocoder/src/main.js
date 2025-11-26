@@ -1,61 +1,82 @@
+// main.js — refactored and updated
+
 const wasmModule = await WebAssembly.compileStreaming(fetch('../build/vocoderinternal.wasm'));
 
+// TODO disable and mute stop button when not playing
+// TODO fix issue where osc never starts again after instr file used
+// TODO test general
+// TODO modify osc freq slider range?
+// TODO replace old version?
+// TODO implement subband vocoding in C and propagate change in calling
+// TODO add outline to stop
+// TODO disable start button while playing
+// TODO add reset to the files to restart from beginning
+// TODO stop the top buttons from moving
+
+///// DOM /////
 const canvas = document.getElementById('spectrogram');
-const ctx = canvas.getContext('2d');
+const topStatusEl = document.getElementById('topStatus');
 const statusEl = document.getElementById('status');
 
-// Controls
-const instrSource = document.getElementById("instrSource");
-const oscSection = document.getElementById("oscSection");
-const instrFileSection = document.getElementById("instrFileSection");
-const instrStatus = document.getElementById("instrStatus");
-
-const oscType = document.getElementById("oscType");
-const oscFreq = document.getElementById("oscFreq");
-
-let osc = null;
-let useOsc = false;
-
-
-instrSource.addEventListener("change", () => {
-    if (instrSource.value === "osc") {
-        oscSection.style.display = "block";
-        instrFileSection.style.display = "none";
-        instrStatus.textContent = "Using oscillator";
-        useOsc = true;
-    } else {
-        oscSection.style.display = "none";
-        instrFileSection.style.display = "block";
-        instrStatus.textContent = "Using instrument audio file";
-        useOsc = false;
-    }
-});
-oscSection.style.display = "block";
-instrFileSection.style.display = "none";
-
+// voice UI
 const micBtn = document.getElementById('micBtn');
 const voiceFileInput = document.getElementById('voiceFileInput');
+const voiceDot = document.getElementById('voiceDot');
+const voiceSourceLabel = document.getElementById('voiceSourceLabel');
+const voiceStatus = document.getElementById('voiceStatus');
+const voiceFileName = document.getElementById('voiceFileName');
+
+// instrument UI
+const instrOscBtn = document.getElementById('instrOscBtn');
+const instrFileBtn = document.getElementById('instrFileBtn');
 const instrFileInput = document.getElementById('instrFileInput');
+const instrDot = document.getElementById('instrDot');
+const instrSourceLabel = document.getElementById('instrSourceLabel');
+const instrStatus = document.getElementById('instrStatus');
+const instrFileName = document.getElementById('instrFileName');
+
+// instrOscNode controls
+const oscType = document.getElementById('oscType');
+const oscFreq = document.getElementById('oscFreq');
+const oscFreqReadout = document.getElementById('oscFreqReadout');
+
+// general controls
+const subbandBtn = document.getElementById('subbandBtn')
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const fftSelect = document.getElementById('fftSize');
 const smoothingEl = document.getElementById('smoothing');
 const gainEl = document.getElementById('gain');
 
-const marginLeft = 50;
+// canvas helpers
+const marginLeft = 0;
+const ctx = canvas.getContext('2d');
 
-// Audio graph objects
+///// Audio graph state /////
 let audioCtx = null;
-let voiceNode = null;
-let instrNode = null;
-let vocoderNode = null;
-let analyser = null;
-let analyserDelayed = null;
-let gainNode = null;
+
 let micStream = null;
+let voiceNode = null;
+let voiceGainNode = null;
+
+let instrFileNode = null;
+let instrFileGainNode = null;
+let instrOscNode = null;
+let instrOscGainNode = null;
+
+let analyserVoice = null;
+let analyserInstr = null;
+let analyserOutput = null;
+let vocoderNode = null;
+
 let rafId = null;
 
-// Canvas pixel scaling
+// UI state
+let usingOsc = true;
+
+let subband = true;
+
+///// Canvas setup /////
 function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
     canvas.width = Math.floor(rect.width * devicePixelRatio);
@@ -64,13 +85,44 @@ function resizeCanvas() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
 
-function setStatus(s) { statusEl.textContent = 'Status: ' + s }
+///// Utility UI functions /////
+function setTopStatus(s) {
+    topStatusEl.textContent = 'Status: ' + s;
+}
+function setStatus(s) {
+    statusEl.textContent = 'Status: ' + s;
+}
+function setVoiceStatus(s) {
+    voiceStatus.textContent = s;
+}
+function setVoiceActive(active, label = '') {
+    voiceDot.classList.toggle('active', !!active);
+    voiceSourceLabel.textContent = label || (active ? 'Microphone' : 'No input');
+}
+function setInstrActive(active, label = '') {
+    instrDot.classList.toggle('active', !!active);
+    instrSourceLabel.textContent = label || (active ? 'Instrument' : 'No input');
+}
+function setVoiceFileName(name) {
+    voiceFileName.textContent = name || '—';
+}
+function setInstrFileName(name) {
+    instrFileName.textContent = name || '—';
+}
+function enableStartIfReady() {
+    // simple readiness: a voice source exists (mic or file) AND (instr: either instrOscNode selected OR file loaded)
+    const voiceReady = !!voiceNode || !!micStream;
+    const instrReady = usingOsc ? !!instrOscNode : !!instrFileNode;
+    startBtn.disabled = !(voiceReady && instrReady);
+    startBtn.classList.toggle('muted', startBtn.disabled);
+}
 
+///// Audio context helpers /////
 async function ensureAudioContext() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await audioCtx.suspend();
         await audioCtx.audioWorklet.addModule('src/MyVocoder.js');
     }
 }
@@ -91,77 +143,19 @@ async function createVocoderNode() {
     return new AudioWorkletNode(audioCtx, "my-vocoder", {
         numberOfInputs: 2,
         numberOfOutputs: 1,
-        processorOptions: { wasmModule, windowSize, hopSize: windowSize / 2 }
+        processorOptions: {
+            wasmModule,
+            windowSize,
+            hopSize: windowSize >> 1,
+            melNumBands: 128,
+            melFreqMin: 0,
+            melFreqMax: 4000
+        }
     });
 }
 
-// Map a magnitude (0..255) to an RGB string using an HSL-ish colormap
-function magnitudeToColor(v) {
-    // v: 0..255 -> convert to hue 240 (blue) -> 0 (red)
-    const norm = v / 255;
-    const hue = 240 - norm * 240; // 240 -> 0
-    const light = Math.min(80, 30 + norm * 70);
-    return `hsl(${hue}deg 100% ${light}%)`;
-}
-
-function drawFrequencyAxis(h, bins) {
-    ctx.fillStyle = '#9fb0c8';
-    ctx.font = '12px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-
-    const sampleRate = audioCtx ? audioCtx.sampleRate : 44100;
-    const nyquist = sampleRate / 2;
-    const exponent = 0.6;
-
-    const freqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-    freqs.forEach(f => {
-        if (f > nyquist) return;
-
-        // convert frequency -> vertical pixel (log scale same as bins)
-        const binIndex = (f / nyquist) * (bins - 1);
-
-        const frac = Math.pow(binIndex / (bins - 1), 1 / exponent); // inverse of mapping
-        const y = Math.round((1 - frac) * (h - 1));
-
-        ctx.beginPath();
-        ctx.moveTo(marginLeft - 5, y);
-        ctx.lineTo(marginLeft, y);
-        ctx.strokeStyle = '#555';
-        ctx.stroke();
-
-        ctx.fillText(formatFreq(f), marginLeft - 8, y);
-    });
-}
-
-function formatFreq(f) {
-    return f >= 1000 ? (f / 1000 + 'k') : f.toString();
-}
-
-
-function hslToRgb(h, s, l) {
-    h /= 360;
-    let r, g, b;
-    if (s === 0) r = g = b = l;
-    else {
-        const hue2rgb = (p, q, t) => {
-            if (t < 0) t += 1;
-            if (t > 1) t -= 1;
-            if (t < 1 / 6) return p + (q - p) * 6 * t;
-            if (t < 1 / 2) return q;
-            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-            return p;
-        };
-        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-        const p = 2 * l - q;
-        r = hue2rgb(p, q, h + 1 / 3);
-        g = hue2rgb(p, q, h);
-        b = hue2rgb(p, q, h - 1 / 3);
-    }
-    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-}
-
-// Draw a column of frequency data (rightmost column) and shift the canvas left by 1 pixel
+// draw a single vertical column for the frequency array into the canvas at the rightmost column,
+// mapping it to the vertical slice yStart..yEnd
 function drawSpectrogramColumn(freqArray, yStart = 0, yEnd = canvas.height) {
     const w = canvas.width;
     const h = yEnd - yStart;
@@ -187,33 +181,79 @@ function drawSpectrogramColumn(freqArray, yStart = 0, yEnd = canvas.height) {
     ctx.putImageData(img, w - 1, yStart);
 }
 
+function magnitudeToColor(v) {
+    const norm = v / 255;
+    const hue = 240 - norm * 240;
+    const light = Math.min(80, 30 + norm * 70);
+    return `hsl(${hue}deg 100% ${light}%)`;
+}
+
+function hslToRgb(h, s, l) {
+    h /= 360;
+    let r, g, b;
+    if (s === 0) r = g = b = l;
+    else {
+        const hue2rgb = (p, q, t) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+    }
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+// Visualizer loop now handles three analysers and three bands stacked vertically.
+// Top band: voice (analyserVoice), middle band: instr (analyserInstr), bottom band: output (analyserOutput)
 async function startVisualizing() {
-    if (!analyser) analyser = await createAnalyser();
-    if (!analyserDelayed) analyserDelayed = await createAnalyser();
-    const bins = analyser.frequencyBinCount;
-    const data = new Uint8Array(bins);
-    const dataDelayed = new Uint8Array(bins);
+    if (!analyserVoice) analyserVoice = await createAnalyser();
+    if (!analyserInstr) analyserInstr = await createAnalyser();
+    if (!analyserOutput) analyserOutput = await createAnalyser();
+
+    const binsV = analyserVoice.frequencyBinCount;
+    const binsI = analyserInstr.frequencyBinCount;
+    const binsO = analyserOutput.frequencyBinCount;
+
+    const dataV = new Uint8Array(binsV);
+    const dataI = new Uint8Array(binsI);
+    const dataO = new Uint8Array(binsO);
 
     function loop() {
-        analyser.getByteFrequencyData(data);
-        analyserDelayed.getByteFrequencyData(dataDelayed);
+        // fill arrays
+        analyserVoice.getByteFrequencyData(dataV);
+        analyserInstr.getByteFrequencyData(dataI);
+        analyserOutput.getByteFrequencyData(dataO);
 
-        // split canvas into two halves
+        // compute band heights (split canvas into 3 horizontal bands)
         const h = canvas.height;
-        const half = Math.floor(h / 2);
+        const bandH = Math.floor(h / 3);
+        const band1Start = 0;
+        const band1End = band1Start + bandH;
+        const band2Start = band1End;
+        const band2End = band2Start + bandH;
+        const band3Start = band2End;
+        const band3End = h;
 
-        // shift both halves
+        // shift existing plot left by 1 pixel for the plotting region (exclude marginLeft)
         const plotW = canvas.width - marginLeft;
+        // copy the content one pixel left within plotting area
         ctx.drawImage(canvas, marginLeft + 1, 0, plotW - 1, h, marginLeft, 0, plotW - 1, h);
 
-        // draw original analyser (top half)
-        drawSpectrogramColumn(data, 0, half);
-
-        // draw delayed analyser (bottom half)
-        drawSpectrogramColumn(dataDelayed, half, h);
+        // Draw rightmost column for each band
+        drawSpectrogramColumn(dataV, band1Start, band1End); // voice top
+        drawSpectrogramColumn(dataI, band2Start, band2End); // instr middle
+        drawSpectrogramColumn(dataO, band3Start, band3End); // output bottom
 
         rafId = requestAnimationFrame(loop);
     }
+
     if (rafId) cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(loop);
 }
@@ -223,226 +263,316 @@ function stopVisualizing() {
     rafId = null;
 }
 
-// Disconnect the current graph and recreate it
-// TODO check the purpose and improve?
-async function recreateAudioGraph() {
+///// Audio graph creation / teardown /////
+async function createAudioGraph() {
     await ensureAudioContext();
-    
-    // Disconnect the source nodes (create silent ones if they don't exist)
-    if (voiceNode) {
-        try { voiceNode.disconnect(); } catch (e) {}
-        if (micStream) {
-            micStream.getTracks().forEach(t => t.enabled = true);
-            console.log(micStream, micStream.getTracks());
-        }
-    } else {
-        voiceNode = audioCtx.createBufferSource();
-        voiceNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-        voiceNode.start(0);
-    }
 
-    if (instrNode) {
-        try { instrNode.disconnect(); } catch (e) {}
-    } else {
-        instrNode = audioCtx.createBufferSource();
-        instrNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-        instrNode.start(0);
-    }
+    voiceNode = audioCtx.createBufferSource();
+    voiceNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    voiceNode.start(0);
 
-    // Replace all other nodes
-    if (vocoderNode) {
-        vocoderNode.port.postMessage({ type: "shutdown" });
-        vocoderNode.port.close?.()
-        vocoderNode.disconnect();
-    }
+    voiceGainNode = audioCtx.createGain();
+    voiceGainNode.gain.value = parseFloat(gainEl.value);
+    instrOscNode = audioCtx.createOscillator();
+    instrOscNode.type = oscType.value;
+    instrOscNode.frequency.value = Number(oscFreq.value);
+    instrOscNode.start();
+    instrOscGainNode = audioCtx.createGain();
+    instrOscGainNode.gain.value = 1.0;
+    instrFileGainNode = audioCtx.createGain();
+    instrFileGainNode.gain.value = 0.0;
+
     vocoderNode = await createVocoderNode();
 
-    if (gainNode) {
-        gainNode.disconnect();
-    }
-    gainNode = audioCtx.createGain();
-    gainNode.gain.value = parseFloat(gainEl.value);
+    analyserVoice = await createAnalyser();
+    analyserInstr = await createAnalyser();
+    analyserOutput = await createAnalyser();
 
-    if (analyser) {
-        analyser.disconnect();
-    }
-    analyser = await createAnalyser();
+    // Voice -> gain -> analyser -> vocoder input 0
+    voiceNode.connect(voiceGainNode);
+    voiceGainNode.connect(analyserVoice);
+    analyserVoice.connect(vocoderNode, 0, 0);
 
-    if (analyserDelayed) {
-        analyserDelayed.disconnect();
-    }
-    analyserDelayed = await createAnalyser();
+    // Instrument -> analyser -> vocoder input 1
+    instrOscNode.connect(instrOscGainNode);
+    instrOscGainNode.connect(analyserInstr);
+    instrFileGainNode.connect(analyserInstr);
+    analyserInstr.connect(vocoderNode, 0, 1);
 
-    // Routing: voice → gain → analyser1 → vocoder, instr → analyser2 → vocoder → destination
-    console.log("recreateAudioGraph routing now");
-    voiceNode.connect(gainNode);
-    gainNode.connect(analyser).connect(vocoderNode,0,0);
-    
-    instrNode.connect(analyserDelayed);
-    analyserDelayed.connect(vocoderNode,0,1);
-    
-    vocoderNode.connect(audioCtx.destination);
+    vocoderNode.connect(analyserOutput);
+    analyserOutput.connect(audioCtx.destination);
 }
 
-// Microphone handling
+async function stopAudioGraph() {
+    if (!audioCtx) return;
+    try { await audioCtx.suspend(); } catch (e) {}
+    stopVisualizing();
+
+    // pause media elements if any
+    if (voiceNode && voiceNode.mediaElement) {
+        try { voiceNode.mediaElement.pause(); } catch (e) {}
+    }
+    if (instrFileNode && instrFileNode.mediaElement) {
+        try { instrFileNode.mediaElement.pause(); } catch (e) {}
+    }
+
+    try {
+        if (micStream) {
+            micStream.getTracks().forEach(t => t.enabled = false);
+        }
+    } catch (e) {}
+    setTopStatus('stopped');
+    setStatus('stopped');
+    enableStartIfReady();
+}
+
+///// Input handlers /////
+
+// Microphone toggle
 micBtn.addEventListener('click', async () => {
     try {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('getUserMedia not supported');
+
+        // request stream if we don't have it
         if (!micStream) {
             micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         }
         micStream.getTracks().forEach(t => t.enabled = true);
+
         await ensureAudioContext();
-        voiceNode?.disconnect();
+
+        // detach existing voice source
+        try { if (voiceNode) voiceNode.disconnect(); } catch (e) {}
+
         voiceNode = audioCtx.createMediaStreamSource(micStream);
-        if (analyser) {
-            voiceNode.connect(analyser);
+        setVoiceActive(true, 'Microphone');
+        setVoiceStatus('Microphone active');
+        setVoiceFileName('');
+
+        if (voiceGainNode) {
+            try { voiceNode.connect(voiceGainNode); } catch (e) { /* will be reconnected in recreateAudioGraph */ }
         }
-        setStatus('microphone active');
+
+        setTopStatus('microphone enabled');
     } catch (err) {
         console.error(err);
-        setStatus('microphone error: ' + (err.message || err));
+        setTopStatus('microphone error');
+        setVoiceStatus('Microphone error: ' + (err.message || err));
+        setVoiceActive(false, 'No input');
+    } finally {
+        enableStartIfReady();
     }
 });
 
-// File input handling — create an <audio> element and connect it
+// Voice file loading
 voiceFileInput.addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
     const audio = new Audio();
-    
     audio.src = url;
     audio.controls = false;
     audio.loop = true;
-    if (audioCtx.state == 'suspended'){
-        audio.pause();
-        audio.currentTime = 0;
-    } else {
-        audio.play();
+
+    await ensureAudioContext();
+
+    // if context suspended at the moment, do not auto-play (resume on Start)
+    if (audioCtx.state !== 'suspended') {
+        try { await audio.play(); } catch (e) { /* ignore autoplay errors */ }
     }
 
-    voiceNode?.disconnect();
-    if (micStream){
-        micStream.getTracks().forEach(t => t.stop());
-        micStream = null;
-    }
+    try { if (voiceNode) voiceNode.disconnect(); } catch (e) {}
+
     voiceNode = audioCtx.createMediaElementSource(audio);
-    if (analyser) {
-        voiceNode.connect(analyser);
+    setVoiceActive(true, 'File');
+    setVoiceStatus('Loaded voice file');
+    setVoiceFileName(f.name || 'selected audio');
+
+    if (voiceGainNode) {
+        try { voiceNode.connect(voiceGainNode); } catch (e) {}
     }
+
+    // if there was a mic stream active, stop it
+    try {
+        if (micStream) {
+            micStream.getTracks().forEach(t => t.stop());
+            micStream = null;
+        }
+    } catch (e) {}
+
+    setTopStatus('voice file loaded');
+    enableStartIfReady();
 });
 
+// Instrument file loading
 instrFileInput.addEventListener('change', async (ev) => {
     const f = ev.target.files && ev.target.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
     const audio = new Audio();
-    
     audio.src = url;
     audio.controls = false;
     audio.loop = true;
-    if (audioCtx.state == 'suspended'){
-        audio.pause();
-        audio.currentTime = 0;
-    } else {
-        audio.play();
-    }
-    
-    instrNode?.disconnect();
-    instrNode = audioCtx.createMediaElementSource(audio);
-    if (analyserDelayed) {
-        instrNode.connect(analyserDelayed);
-    }
-});
 
-startBtn.addEventListener('click', async () => {
-    // resume context if needed
     await ensureAudioContext();
 
-    // if we have an analyser but no source, create one from the default output (not always possible). We rely on user to select file/mic.
-    if (!voiceNode) { setStatus('please load a voice file or enable microphone'); return; }
-    if (!instrNode) { setStatus('please load a instr file'); return; }
+    if (audioCtx.state !== 'suspended') {
+        try { await audio.play(); } catch (e) {}
+    }
 
-    await recreateAudioGraph();
+    try { if (instrFileNode) instrFileNode.disconnect(); } catch (e) {}
+
+    instrFileNode = audioCtx.createMediaElementSource(audio);
+    setInstrFileName(f.name || 'selected audio');
+    instrStatus.textContent = 'Loaded instrument file';
+    setInstrActive(true, 'File');
+    // when file is selected we automatically switch to file mode
+    usingOsc = false;
+    updateInstrUI();
+    
+    if (instrFileGainNode) {
+        try { instrFileNode.connect(instrFileGainNode); } catch (e) {}
+    }
+    setTopStatus('instrument file loaded');
+    enableStartIfReady();
+});
+
+///// Instrument mode UI (two big visible choices) /////
+instrOscBtn.addEventListener('click', () => {
+    instrOscGainNode.gain.value = 1.0;
+    instrFileGainNode.gain.value = 0.0;
+    usingOsc = true;
+    updateInstrUI();
+    enableStartIfReady();
+});
+instrFileBtn.addEventListener('click', () => {
+    instrOscGainNode.gain.value = 0.0;
+    instrFileGainNode.gain.value = 1.0;
+    usingOsc = false;
+    updateInstrUI();
+    enableStartIfReady();
+});
+
+subbandBtn.addEventListener('click', () => {
+    subband = !subband;
+    if (vocoderNode){
+        vocoderNode.parameters.get('subband').value = subband;
+    }
+});
+
+function updateInstrUI() {
+    instrOscBtn.classList.toggle('active', usingOsc);
+    instrFileBtn.classList.toggle('active', !usingOsc);
+
+    // update dot + label
+    setInstrActive(true, usingOsc ? 'Oscillator' : 'File');
+
+    // visually dim file section if using instrOscNode
+    document.getElementById('instrFileSection').classList.toggle('muted', usingOsc);
+
+    // update status text
+    if (usingOsc) {
+        instrStatus.textContent = 'Using oscillator';
+    } else {
+        instrStatus.textContent = instrFileName.textContent && instrFileName.textContent !== '—'
+            ? 'Using instrument file'
+            : 'No instrument file loaded';
+    }
+}
+
+///// oscillator UI updates /////
+oscType.addEventListener('change', () => {
+    if (instrOscNode) instrOscNode.type = oscType.value;
+});
+oscFreq.addEventListener('input', () => {
+    const v = Number(oscFreq.value);
+    oscFreqReadout.textContent = v + ' Hz';
+    if (instrOscNode) instrOscNode.frequency.value = v;
+});
+
+///// Start/Stop buttons /////
+startBtn.addEventListener('click', async () => {
+    await ensureAudioContext();
+
+    // check readiness
+    const voiceReady = !!voiceNode || !!micStream;
+    const instrReady = usingOsc ? !!instrOscNode : !!instrFileNode;
+    if (!voiceReady) {
+        setTopStatus('please enable microphone or load voice file');
+        return;
+    }
+    if (!instrReady) {
+        setTopStatus('please choose oscillator or load instrument file');
+        return;
+    }
 
     if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
-    if (voiceNode.mediaElement){
-        voiceNode.mediaElement.play();
-    }
-    if (instrNode.mediaElement){
-        instrNode.mediaElement.play();
+        try { await audioCtx.resume(); } catch (e) {}
     }
 
-    if (!rafId) {
-        await startVisualizing();
-    }
-});
-
-stopBtn.addEventListener('click', () => {
-    audioCtx.suspend();
-    stopVisualizing();
-    
-    try {
-        if (micStream) {
-            micStream.getTracks().forEach(t => t.enabled = false);
-        }
-    } catch (e) { }
+    // ensure media elements play
     if (voiceNode && voiceNode.mediaElement) {
-        try {
-            voiceNode.mediaElement.pause();
-        } catch (e) { }
+        try { voiceNode.mediaElement.play(); } catch (e) {}
     }
-    if (instrNode && instrNode.mediaElement) {
-        try {
-            instrNode.mediaElement.pause();
-        } catch (e) { }
+    if (instrFileNode && instrFileNode.mediaElement) {
+        try { instrFileNode.mediaElement.play(); } catch (e) {}
     }
-    setStatus('stopped');
+
+    // start visualizer
+    if (!rafId) startVisualizing();
+
+    setTopStatus('running');
+    setStatus('running');
+    enableStartIfReady();
 });
 
-// Update analyser when controls change
+stopBtn.addEventListener('click', async () => {
+    await stopAudioGraph();
+});
+
+///// Control changes affecting existing nodes /////
 fftSelect.addEventListener('change', async () => {
     const fftSize = parseInt(fftSelect.value, 10);
-    if (analyser) { analyser.fftSize = fftSize; }
-    if (analyserDelayed) { analyserDelayed.fftSize = fftSize; }
+    if (analyserVoice) analyserVoice.fftSize = fftSize;
+    if (analyserInstr) analyserInstr.fftSize = fftSize;
+    if (analyserOutput) analyserOutput.fftSize = fftSize;
+
+    // re-create vocoder node to apply new window size
     if (vocoderNode) {
-        analyser?.disconnect();
-        analyserDelayed?.disconnect();
-        vocoderNode.port.postMessage({ type: "shutdown" });
-        vocoderNode.port.close?.();
-        vocoderNode.disconnect();
+        try {
+            analyserVoice?.disconnect();
+            analyserInstr?.disconnect();
+            vocoderNode.port.postMessage({ type: "shutdown" });
+            vocoderNode.port.close?.();
+            vocoderNode.disconnect();
+        } catch (e) {}
         vocoderNode = await createVocoderNode();
-        analyser?.connect(vocoderNode);
-        analyserDelayed?.connect(vocoderNode);
-        vocoderNode.connect(audioCtx.destination);
+        analyserVoice?.connect(vocoderNode,0,0);
+        analyserInstr?.connect(vocoderNode,0,1);
+        vocoderNode.connect(analyserOutput);
     }
 });
 smoothingEl.addEventListener('input', () => {
-    if (analyser) { analyser.smoothingTimeConstant = parseFloat(smoothingEl.value); }
-    if (analyserDelayed) { analyserDelayed.smoothingTimeConstant = parseFloat(smoothingEl.value); }
+    if (analyserVoice) analyserVoice.smoothingTimeConstant = parseFloat(smoothingEl.value);
+    if (analyserInstr) analyserInstr.smoothingTimeConstant = parseFloat(smoothingEl.value);
+    if (analyserOutput) analyserOutput.smoothingTimeConstant = parseFloat(smoothingEl.value);
 });
 gainEl.addEventListener('input', () => {
-    if (gainNode) gainNode.gain.value = parseFloat(gainEl.value);
+    if (voiceGainNode) voiceGainNode.gain.value = parseFloat(gainEl.value);
 });
 
-oscType.addEventListener("change", () => {
-    useOsc = true;
-    if (osc) osc.type = oscType.value;
-});
-
-oscFreq.addEventListener("input", () => {
-    useOsc = true;
-    if (osc) osc.frequency.value = Number(oscFreq.value);
-});
-
+///// Boot-time friendly behavior /////
 document.addEventListener('click', async function _init() {
     document.removeEventListener('click', _init);
     await ensureAudioContext();
-    await audioCtx.suspend();
+    // starts suspended so audio won't play until user explicitly starts
+    await createAudioGraph();
+    setTopStatus('idle');
     setStatus('idle');
+    setInstrFileName('');
+    setVoiceFileName('');
+    updateInstrUI();
+    enableStartIfReady();
 });
 
 // initial canvas fill
