@@ -125,11 +125,24 @@ struct VocoderInternal* vocoder_internal_create(int sample_rate, int window_size
     memset(p->voice_buffer, 0, 3*window_size*sizeof(float));
 
     // Create MEL_BIN
-    float start = logf(mel_freq_min), stop = logf(mel_freq_max);
-    for (int i = 0; i < mel_num_bands+2; ++i){
-        p->MEL_BIN[i] = window_size*(expf(start + i*(stop-start)/(mel_num_bands+1)))/sample_rate;
+    const float mel_min_m = 1127.0f * log1pf(mel_freq_min / 700.0f);
+    const float mel_max_m = 1127.0f * log1pf(mel_freq_max / 700.0f);
+    const float mel_step  = (mel_max_m - mel_min_m) / (mel_num_bands + 1);
+    for (int i = 0; i < p->mel_num_bands + 2; ++i) {
+        float mel = mel_min_m + i*mel_step;
+        float freq = 700.0f * expm1f(mel / 1127.0f);
+        float bin_f = freq * ((float)window_size/(float)sample_rate);
+
+        if (bin_f < 0.0f){
+            bin_f = 0.0f;
+        }
+        if (bin_f > window_size/2){
+            bin_f = (float)(window_size/2);
+        }
+
+        p->MEL_BIN[i] = (int)(bin_f + 0.5f);
     }
-    
+
     // We can leave time_data, mel_amps, mel_bands, voice_freq_data, and instr_freq_data uninited
     kiss_fftr_alloc(window_size, 0, p->forward_cfg, &forward_cfg_size);
     kiss_fftr_alloc(window_size, 1, p->inverse_cfg, &inverse_cfg_size);
@@ -156,7 +169,7 @@ float* vocoder_internal_next_output_quantum_ptr(struct VocoderInternal *p){
     return p->output_buffer + p->index;
 }
 
-void vocoder_internal_process(struct VocoderInternal *p, int subband) {
+void vocoder_internal_process(struct VocoderInternal *p, int flags) {
     // JS should have done the copy in and out of the buffer views. Advance index
     const int window_size = p->window_size;
     const int hop_size = p->hop_size;
@@ -178,7 +191,7 @@ void vocoder_internal_process(struct VocoderInternal *p, int subband) {
         for (int i = 0; i < window_size/2+1; ++i){
             p->mel_amps[i] = sqrtf(p->voice_freq_data[i].r*p->voice_freq_data[i].r + p->voice_freq_data[i].i*p->voice_freq_data[i].i);
         }
-        if (subband){
+        if (flags & 1){
             _apply_mel_filter(p);
         }
         
@@ -198,7 +211,6 @@ void vocoder_internal_process(struct VocoderInternal *p, int subband) {
     }
 }
 
-
 inline float _calc_mel_filter_val(struct VocoderInternal *p, int r, int c){
     if (c > p->MEL_BIN[r] && c < p->MEL_BIN[r+1]){
         return (float)(c - p->MEL_BIN[r])/(p->MEL_BIN[r+1] - p->MEL_BIN[r]);
@@ -213,28 +225,63 @@ void _apply_mel_filter(struct VocoderInternal *p){
     const int M = p->mel_num_bands;
     const int N = p->window_size/2 + 1;
 
-    // Multiply by Mel filter
+    float *in  = p->mel_amps;     // original magnitudes
+    float *bands = p->mel_bands;  // mel band energies
+    int *B = p->MEL_BIN;
+
+    // Temporary buffer for reconstructed magnitudes (stack allocation)
+    float *tmp = alloca(sizeof(float) * N);
+
+    // 1. Compute mel-band energies
     for (int r = 0; r < M; ++r){
-        float temp = 0;
-        for (int c = p->MEL_BIN[r]+1; c < p->MEL_BIN[r+2]; ++c){
-            temp += _calc_mel_filter_val(p,r,c) * p->mel_amps[c];
+        int b0 = B[r];
+        int b1 = B[r+1];
+        int b2 = B[r+2];
+
+        float acc = 0.0f;
+
+        // rising + falling together
+        for (int c = b0; c <= b2 && c < N; ++c) {
+            float w = _calc_mel_filter_val(p, r, c);
+            if (w > 0.0f){
+                acc += w * in[c];
+            }
         }
-        p->mel_bands[r] = temp;
+
+        bands[r] = acc;
     }
 
-    // Multiply by Mel filter transpose
-    memset(p->mel_amps,0,N*sizeof(float));
+    // 2. Reconstruct spectrum into tmp
+    memset(tmp, 0, sizeof(float) * N);
+
     for (int r = 0; r < M; ++r){
-        for (int c = p->MEL_BIN[r]+1; c < p->MEL_BIN[r+2]; ++c){
-            p->mel_amps[c] += _calc_mel_filter_val(p,r,c) * p->mel_bands[r];
+        int b0 = B[r];
+        int b1 = B[r+1];
+        int b2 = B[r+2];
+        float e = bands[r];
+
+        if (e == 0.0f) continue;
+
+        for (int c = b0; c <= b2 && c < N; ++c){
+            float w = _calc_mel_filter_val(p, r, c);
+            if (w > 0.0f){
+                tmp[c] += w * e;
+            }
         }
     }
 
-    // Bins outside the range of the mel filter are unchanged
-    for (int i = 0; i < N; ++i){
-        if (i == p->MEL_BIN[0]){
-            i = p->MEL_BIN[M+1];
-        }
-        p->mel_amps[i] = sqrtf(p->voice_freq_data[i].r*p->voice_freq_data[i].r + p->voice_freq_data[i].i*p->voice_freq_data[i].i);
+    // 3. Preserve bins outside mel range
+    int left  = B[0];
+    int right = B[M+1];
+
+    for (int c = 0; c < left && c < N; ++c){
+        tmp[c] = in[c];
     }
+
+    for (int c = right+1; c < N; ++c){
+        tmp[c] = in[c];
+    }
+
+    // 4. Copy reconstructed spectrum back into mel_amps
+    memcpy(in, tmp, sizeof(float) * N);
 }

@@ -122,6 +122,7 @@ function enableStartIfReady() {
 async function ensureAudioContext() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await audioCtx.suspend();
         await audioCtx.audioWorklet.addModule('src/MyVocoder.js');
     }
 }
@@ -277,7 +278,7 @@ async function createAudioGraph() {
     instrOscNode.frequency.value = Number(oscFreq.value);
     instrOscNode.start();
     instrOscGainNode = audioCtx.createGain();
-    instrOscGainNode.gain.value = 0.0;
+    instrOscGainNode.gain.value = 1.0;
     instrFileGainNode = audioCtx.createGain();
     instrFileGainNode.gain.value = 0.0;
 
@@ -564,9 +565,8 @@ gainEl.addEventListener('input', () => {
 document.addEventListener('click', async function _init() {
     document.removeEventListener('click', _init);
     await ensureAudioContext();
-    // start suspended so audio won't play until user explicitly starts
-    await audioCtx.suspend();
-    createAudioGraph();
+    // starts suspended so audio won't play until user explicitly starts
+    await createAudioGraph();
     setTopStatus('idle');
     setStatus('idle');
     setInstrFileName('');
