@@ -1,19 +1,9 @@
-// main.js — refactored and updated
-
 const wasmModule = await WebAssembly.compileStreaming(fetch('../build/vocoderinternal.wasm'));
 
-// TODO disable and mute stop button when not playing
-// TODO fix issue where osc never starts again after instr file used
-// TODO test general
-// TODO modify osc freq slider range?
-// TODO replace old version?
-// TODO implement subband vocoding in C and propagate change in calling
-// TODO add outline to stop
-// TODO disable start button while playing
+// TODO fix subband vocoding in C and reenable button on frontend
 // TODO add reset to the files to restart from beginning
-// TODO stop the top buttons from moving
 
-///// DOM /////
+// DOM
 const canvas = document.getElementById('spectrogram');
 const topStatusEl = document.getElementById('topStatus');
 const statusEl = document.getElementById('status');
@@ -52,7 +42,7 @@ const gainEl = document.getElementById('gain');
 const marginLeft = 0;
 const ctx = canvas.getContext('2d');
 
-///// Audio graph state /////
+// Audio graph state
 let audioCtx = null;
 
 let micStream = null;
@@ -76,7 +66,7 @@ let usingOsc = true;
 
 let subband = true;
 
-///// Canvas setup /////
+// Canvas setup
 function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
     canvas.width = Math.floor(rect.width * devicePixelRatio);
@@ -86,7 +76,7 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 
-///// Utility UI functions /////
+// Utility UI functions
 function setTopStatus(s) {
     topStatusEl.textContent = 'Status: ' + s;
 }
@@ -111,14 +101,20 @@ function setInstrFileName(name) {
     instrFileName.textContent = name || '—';
 }
 function enableStartIfReady() {
-    // simple readiness: a voice source exists (mic or file) AND (instr: either instrOscNode selected OR file loaded)
     const voiceReady = !!voiceNode || !!micStream;
     const instrReady = usingOsc ? !!instrOscNode : !!instrFileNode;
-    startBtn.disabled = !(voiceReady && instrReady);
-    startBtn.classList.toggle('muted', startBtn.disabled);
+    const startReady = voiceReady && instrReady && !!audioCtx && audioCtx.state === 'suspended';
+    startBtn.disabled = !startReady;
+    startBtn.classList.toggle('muted', !startReady);
+    startBtn.classList.toggle('primary', startReady);
+
+    const stopReady = !!audioCtx && audioCtx.state !== 'suspended';
+    stopBtn.disabled = !stopReady;
+    stopBtn.classList.toggle('muted', !stopReady);
+    stopBtn.classList.toggle('primary', stopReady);
 }
 
-///// Audio context helpers /////
+// Audio context helpers
 async function ensureAudioContext() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -263,13 +259,9 @@ function stopVisualizing() {
     rafId = null;
 }
 
-///// Audio graph creation / teardown /////
+// Audio graph creation / teardown
 async function createAudioGraph() {
     await ensureAudioContext();
-
-    voiceNode = audioCtx.createBufferSource();
-    voiceNode.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-    voiceNode.start(0);
 
     voiceGainNode = audioCtx.createGain();
     voiceGainNode.gain.value = parseFloat(gainEl.value);
@@ -289,7 +281,6 @@ async function createAudioGraph() {
     analyserOutput = await createAnalyser();
 
     // Voice -> gain -> analyser -> vocoder input 0
-    voiceNode.connect(voiceGainNode);
     voiceGainNode.connect(analyserVoice);
     analyserVoice.connect(vocoderNode, 0, 0);
 
@@ -326,7 +317,7 @@ async function stopAudioGraph() {
     enableStartIfReady();
 }
 
-///// Input handlers /////
+// Input handlers
 
 // Microphone toggle
 micBtn.addEventListener('click', async () => {
@@ -437,7 +428,7 @@ instrFileInput.addEventListener('change', async (ev) => {
     enableStartIfReady();
 });
 
-///// Instrument mode UI (two big visible choices) /////
+// Instrument mode UI (two big visible choices)
 instrOscBtn.addEventListener('click', () => {
     instrOscGainNode.gain.value = 1.0;
     instrFileGainNode.gain.value = 0.0;
@@ -480,7 +471,7 @@ function updateInstrUI() {
     }
 }
 
-///// oscillator UI updates /////
+// Oscillator UI updates
 oscType.addEventListener('change', () => {
     if (instrOscNode) instrOscNode.type = oscType.value;
 });
@@ -490,7 +481,7 @@ oscFreq.addEventListener('input', () => {
     if (instrOscNode) instrOscNode.frequency.value = v;
 });
 
-///// Start/Stop buttons /////
+// Start/Stop buttons
 startBtn.addEventListener('click', async () => {
     await ensureAudioContext();
 
@@ -528,9 +519,10 @@ startBtn.addEventListener('click', async () => {
 
 stopBtn.addEventListener('click', async () => {
     await stopAudioGraph();
+    enableStartIfReady();
 });
 
-///// Control changes affecting existing nodes /////
+// Control changes affecting existing nodes
 fftSelect.addEventListener('change', async () => {
     const fftSize = parseInt(fftSelect.value, 10);
     if (analyserVoice) analyserVoice.fftSize = fftSize;
@@ -561,7 +553,6 @@ gainEl.addEventListener('input', () => {
     if (voiceGainNode) voiceGainNode.gain.value = parseFloat(gainEl.value);
 });
 
-///// Boot-time friendly behavior /////
 document.addEventListener('click', async function _init() {
     document.removeEventListener('click', _init);
     await ensureAudioContext();

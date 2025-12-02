@@ -111,10 +111,7 @@ void stft_internal_process(struct StftInternal *p) {
         }
 
         kiss_fftr(p->forward_cfg, p->timeData, p->freqData);
-        for (int i = 0; i < windowSize/2+1; ++i){
-            p->freqData[i].r *= i<windowSize/8;
-            p->freqData[i].i *= i<windowSize/8;
-        }
+        // Filters go here
         kiss_fftri(p->inverse_cfg, p->freqData, p->timeData);
 
         for (int i = 0; i < hopSize; ++i){

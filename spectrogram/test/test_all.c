@@ -7,7 +7,6 @@
 
 #define EPS 1e-6f
 #define TEST_SIGNAL_LENGTH (WINDOW_SIZE * 4)
-// TODO remove
 #define WINDOW_SIZE 1024
 #define HOP_SIZE 512
 
@@ -115,12 +114,10 @@ static void test_stft_reconstruction(void) {
         float* inPtr = stft_internal_next_input_quantum_ptr(stft);
         memcpy(inPtr, input+pos, sizeof(float) * QUANTUM_SIZE);
 
-        // TODO move copy out here
-
-        stft_internal_process(stft);
-
         float* outPtr = stft_internal_next_output_quantum_ptr(stft);
         memcpy(output+pos, outPtr, sizeof(float) * QUANTUM_SIZE);
+
+        stft_internal_process(stft);
 
         pos += QUANTUM_SIZE;
     }
@@ -130,12 +127,14 @@ static void test_stft_reconstruction(void) {
     for (int f = 0; f < flush_blocks; ++f) {
         float* inPtr = stft_internal_next_input_quantum_ptr(stft);
         memset(inPtr, 0, sizeof(float) * QUANTUM_SIZE);
-        stft_internal_process(stft);
-
+        
         float* outPtr = stft_internal_next_output_quantum_ptr(stft);
         int out_pos = pos + f * QUANTUM_SIZE;
         memcpy(output+out_pos, outPtr, sizeof(float) * QUANTUM_SIZE);
+
+        stft_internal_process(stft);
     }
+    
 
     // Dump the full arrays for external inspection
     dump_arrays_to_csv("build/stft_debug.csv", input, output, TEST_SIGNAL_LENGTH + WINDOW_SIZE);
@@ -144,8 +143,7 @@ static void test_stft_reconstruction(void) {
     // --- Compare only the valid portion ---
     double mse = 0.0;
     for (int i = 0; i < TEST_SIGNAL_LENGTH; ++i) {
-        // Apparently the delay is WINDOW_SIZE-QUANTUM_SIZE samples
-        float diff = input[i] - output[i+WINDOW_SIZE-QUANTUM_SIZE];
+        float diff = input[i] - output[i+WINDOW_SIZE];
         mse += diff * diff;
     }
     mse /= TEST_SIGNAL_LENGTH;

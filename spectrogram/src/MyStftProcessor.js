@@ -1,5 +1,3 @@
-// TODO improve naming of Make target, module name, filenames, classnames, etc
-// TODO make node class to simplify clean up and allow changing of window size and hop size??
 class MyStftProcessor extends AudioWorkletProcessor {
     constructor(options) {
         super();
@@ -7,15 +5,12 @@ class MyStftProcessor extends AudioWorkletProcessor {
         const wasmModule = options.processorOptions.wasmModule;
         const windowSize = options.processorOptions.windowSize;
         const hopSize = options.processorOptions.hopSize;
-        console.log({windowSize, hopSize});
         this.ready = false;
         this.shouldStop = false;
 
         this.port.onmessage = (e) => {
-            console.log("message recv", e);
             if (e.data.type === "shutdown") {
                 // release large buffers, etc.
-                console.log("shutdown processor");
                 this.exports.stft_internal_destroy(this.internalNodePtr);
                 this.shouldStop = true;
             }
@@ -55,7 +50,6 @@ class MyStftProcessor extends AudioWorkletProcessor {
 
     process(inputList, outputList, parameters) {
         if(this.shouldStop){
-            console.log("process return false");
             return false;
         }
         if(!this.ready){
@@ -63,10 +57,8 @@ class MyStftProcessor extends AudioWorkletProcessor {
         }
 
         // This function runs until the audio context is suspended
-        // TODO handle multiple channels and inputs??
         const input = inputList[0][0] ?? new Float32Array(128);
         const output = outputList[0][0] ?? new Float32Array(128);
-        // console.log(input)
         if (input.length !== 128){
             throw new Error("Unexpected block size");
         }

@@ -1,5 +1,3 @@
-// TODO improve naming of Make target, module name, filenames, classnames, etc
-// TODO make node class to simplify clean up and allow changing of window size and hop size??
 class MyVocoder extends AudioWorkletProcessor {
     static get parameterDescriptors() {
         return [
@@ -10,23 +8,18 @@ class MyVocoder extends AudioWorkletProcessor {
     constructor(options) {
         super();
 
-        // TODO set the number of inputs and outputs correctly
-
         const wasmModule = options.processorOptions.wasmModule;
         const windowSize = options.processorOptions.windowSize ?? 2048;
         const hopSize = options.processorOptions.hopSize ?? windowSize>>1;
         const melNumBands = options.processorOptions.melNumBands ?? 128;
         const melFreqMin = options.processorOptions.melFreqMin ?? 0;
         const melFreqMax = options.processorOptions.melFreqMax ?? sampleRate>>1;
-        console.log({...options.processorOptions});
         this.ready = false;
         this.shouldStop = false;
 
         this.port.onmessage = (e) => {
-            console.log("message recv", e);
             if (e.data.type === "shutdown") {
                 // release large buffers, etc.
-                console.log("shutdown processor");
                 this.exports.vocoder_internal_destroy(this.internalNodePtr);
                 this.shouldStop = true;
             }
@@ -68,7 +61,6 @@ class MyVocoder extends AudioWorkletProcessor {
 
     process(inputList, outputList, parameters) {
         if(this.shouldStop){
-            console.log("process return false");
             return false;
         }
         if(!this.ready){
@@ -76,7 +68,6 @@ class MyVocoder extends AudioWorkletProcessor {
         }
 
         // This function runs until the audio context is suspended
-        // TODO handle multiple channels??
         const voice = inputList[0][0] ?? new Float32Array(128);
         const instr = inputList[1][0] ?? new Float32Array(128);
         const output = outputList[0][0] ?? new Float32Array(128);
@@ -86,10 +77,6 @@ class MyVocoder extends AudioWorkletProcessor {
         }
 
         // TODO investigate memory issue when setting output?
-        // console.log(this.exports.vocoder_internal_next_voice_quantum_ptr(this.internalNodePtr));
-        // console.log(this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr));
-        // console.log(this.exports.vocoder_internal_next_output_quantum_ptr(this.internalNodePtr));
-
         new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_voice_quantum_ptr(this.internalNodePtr),128).set(voice);
         new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr),128).set(instr);
         output.set(new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_output_quantum_ptr(this.internalNodePtr),128));
