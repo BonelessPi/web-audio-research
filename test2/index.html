@@ -35,7 +35,6 @@
       audioElement.addEventListener("play", async () => {
         if (audioContext.state === "suspended") {
           await audioContext.resume();
-          console.log("AudioContext resumed");
         }
       });
     }

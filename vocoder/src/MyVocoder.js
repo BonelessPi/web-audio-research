@@ -1,17 +1,26 @@
-class MyStftProcessor extends AudioWorkletProcessor {
+class MyVocoder extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+        return [
+            { name: 'subband', defaultValue: 0, automationRate: 'k-rate' },
+        ];
+    }
+
     constructor(options) {
         super();
 
         const wasmModule = options.processorOptions.wasmModule;
-        const windowSize = options.processorOptions.windowSize;
-        const hopSize = options.processorOptions.hopSize;
+        const windowSize = options.processorOptions.windowSize ?? 2048;
+        const hopSize = options.processorOptions.hopSize ?? windowSize>>1;
+        const melNumBands = options.processorOptions.melNumBands ?? 128;
+        const melFreqMin = options.processorOptions.melFreqMin ?? 0;
+        const melFreqMax = options.processorOptions.melFreqMax ?? sampleRate>>1;
         this.ready = false;
         this.shouldStop = false;
 
         this.port.onmessage = (e) => {
             if (e.data.type === "shutdown") {
                 // release large buffers, etc.
-                this.exports.stft_internal_destroy(this.internalNodePtr);
+                this.exports.vocoder_internal_destroy(this.internalNodePtr);
                 this.shouldStop = true;
             }
         };
@@ -43,7 +52,9 @@ class MyStftProcessor extends AudioWorkletProcessor {
             this.instance = instance;
             this.exports = instance.exports;
             this.memory = instance.exports.memory;
-            this.internalNodePtr = instance.exports.stft_internal_create(windowSize,hopSize);
+            this.internalNodePtr = instance.exports.vocoder_internal_create(
+                sampleRate, windowSize, hopSize, melNumBands, melFreqMin, melFreqMax
+            );
             this.ready = true;
         });
     }
@@ -57,19 +68,23 @@ class MyStftProcessor extends AudioWorkletProcessor {
         }
 
         // This function runs until the audio context is suspended
-        const input = inputList[0][0] ?? new Float32Array(128);
+        const voice = inputList[0][0] ?? new Float32Array(128);
+        const instr = inputList[1][0] ?? new Float32Array(128);
         const output = outputList[0][0] ?? new Float32Array(128);
-        if (input.length !== 128){
+
+        if (voice.length !== 128 || instr.length !== 128){
             throw new Error("Unexpected block size");
         }
 
-        new Float32Array(this.memory.buffer,this.exports.stft_internal_next_input_quantum_ptr(this.internalNodePtr),128).set(input);
-        output.set(new Float32Array(this.memory.buffer,this.exports.stft_internal_next_output_quantum_ptr(this.internalNodePtr),128));
+        // TODO investigate memory issue when setting output?
+        new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_voice_quantum_ptr(this.internalNodePtr),128).set(voice);
+        new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_instr_quantum_ptr(this.internalNodePtr),128).set(instr);
+        output.set(new Float32Array(this.memory.buffer,this.exports.vocoder_internal_next_output_quantum_ptr(this.internalNodePtr),128));
 
-        this.exports.stft_internal_process(this.internalNodePtr);
+        this.exports.vocoder_internal_process(this.internalNodePtr, parameters.subband[0]);
 
         return true;
     }
 }
 
-registerProcessor("my-stft-processor", MyStftProcessor);
+registerProcessor("my-vocoder", MyVocoder);
